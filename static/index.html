@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#080b12" />
+  <title>OpenReplay — Counter-Strike 2 Demo Viewer</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v=21" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png?v=21" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png?v=21" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=21" />
+  <link rel="stylesheet" href="/static/styles.css?v=27" />
+</head>
+<body>
+  <div class="app default-focus" id="replayApp">
+    <aside class="left-panel">
+      <div class="brand"><img class="brand-logo" src="/static/openreplay-wide.png?v=21" alt="OpenReplay" /></div>
+      <div class="section-label spaced">YOUR WORKSPACE</div>
+      <button id="openDemo" class="primary-btn wide"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 16v4h14v-4"/></svg> Open .dem file <span>↗</span></button>
+      <input type="file" id="fileInput" accept=".dem" hidden />
+      <div id="fileLine" class="file-line" title="Current file"><span class="status-indicator"></span><span id="fileName">No file selected</span></div>
+      <div id="demoUploadProgress" class="demo-upload-progress" role="status" aria-live="polite" aria-busy="false" hidden>
+          <div class="upload-status-line"><strong id="uploadStage">Uploading demo…</strong><span id="uploadInfo">0%</span></div>
+          <div class="upload-progress-track"><div id="uploadBar" class="upload-progress-fill" style="width:0%"></div></div>
+        </div>
+      <div class="section-divider"></div>
+      <div class="label-row"><span class="section-label">MATCH ROUNDS</span><span class="little-count" id="roundCount">00</span></div>
+      <div class="round-legend"><span class="legend-text ct-legend">CT win</span><span class="legend-text t-legend">T win</span><span class="legend-text neutral-legend">Icon = round ending</span></div>
+      <div id="roundList" class="round-list" aria-label="Match round navigation"></div>
+      <div class="left-footer"><div class="shortcut-row"><span>PLAY / PAUSE</span><kbd>SPACE</kbd></div><div class="shortcut-row"><span>SKIP ±5 SECONDS</span><kbd>←</kbd> <kbd>→</kbd></div><div class="shortcut-row"><span>PREV / NEXT ROUND</span><kbd>↑</kbd> <kbd>↓</kbd></div></div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="crumb"><span class="crumb-muted">OPENREPLAY</span><span class="slash">/</span><span id="breadcrumbMap">DE_MIRAGE</span><span class="preview-tag" id="previewTag">SAMPLE DATA</span></div>
+        <div class="top-right"><span class="local-chip"><span class="local-dot"></span> LOCAL REPLAY</span><button class="icon-button" id="helpButton" aria-label="Help" title="Help">?</button></div>
+      </header>
+      <div class="main-body">
+        <div class="heading-row"><div><div class="eyebrow">TACTICAL OVERVIEW <span class="text-lime">/ LIVE TIMELINE</span></div><h1 id="mapTitle">Mirage <span class="title-line">/</span> Match Replay</h1><p id="subtitle">Watch your match unfold from above, round by round.</p></div><div class="right-heading"><div class="heading-small">ROUND IN VIEW</div><div class="large-round" id="heroRound">01 <span>/ 12</span></div></div></div>
+        <div class="view-bar"><div class="view-left"><div class="dot pulsing"></div><span id="viewStatus">REPLAY READY</span><span class="separator">|</span><span id="radarStatus">LOADING MAP RADAR...</span></div><div class="view-score" aria-label="Match score and round clock"><div class="view-score-results"><div class="match-score" id="matchScore"><span class="match-score-ct">CT <b id="scoreCT">0</b></span><span class="score-separator">:</span><span class="match-score-t"><b id="scoreT">0</b> T</span></div><div class="match-final" id="matchFinal">FINAL — : —</div></div><span class="round-clock" id="roundClock" aria-label="Current round time">ROUND 01 · 01:55</span></div><div class="view-right"><label class="full-round-label" for="viewerRound">ROUND</label><select id="viewerRound" class="round-select" aria-label="Jump to round"></select><button id="toggleUtility" class="mini-button active" aria-pressed="true">◈ <span>Utility</span></button><button id="toggleDeaths" class="mini-button active" aria-pressed="true">✕ <span>Kills</span></button><button id="toggleNames" class="mini-button active" aria-pressed="true">Aa <span>Names on</span></button><button id="toggleGrid" class="mini-button" aria-pressed="false"># <span>Grid</span></button><button id="toggleLevel" class="mini-button" style="display:none" aria-pressed="false" title="Switch between stacked upper/lower floors and layered overlay">▤ <span>Stacked</span></button><div class="layer-floor-controls" id="layerFloorControls" role="group" aria-label="Layered map floor" hidden><button id="layerFloorUpper" class="mini-button active" aria-pressed="true">Upper</button><button id="layerFloorLower" class="mini-button" aria-pressed="false">Lower</button></div></div></div>
+        <div id="mapContainer" class="map-container">
+          <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+          <div class="camera-controls" aria-label="Map zoom and reset controls"><button id="zoomOut" title="Zoom out" aria-label="Zoom out">−</button><span id="zoomValue">100%</span><button id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button><button id="resetView" class="camera-reset" title="Reset camera position and zoom">↺ Reset</button></div><div id="radarWrap" class="radar-wrap"><canvas id="radar" width="1024" height="1024" aria-label="Two dimensional overhead replay of player positions"></canvas></div>
+          <div class="map-overlay left-top"><div class="tag">MAP VIEW<span class="tag-bullet"></span><span id="overlayMap">DE_MIRAGE</span></div><div id="activeUtility" class="active-utility" aria-label="Active grenades in view" aria-live="off"></div></div>
+          <div class="map-overlay right-top"><div class="tag muted"><span id="levelBadge">LEVEL 01</span> <span class="tag-bullet"></span> TOP DOWN</div><div id="liveKillfeed" class="live-killfeed" role="log" aria-label="Recent kills" aria-live="off"></div></div>
+          <div class="map-overlay left-bottom"><div class="radar-gesture-hint" aria-label="Map shortcuts"><span><kbd>SHIFT</kbd> + DRAG · SELECT PLAYERS</span><span><kbd>CTRL</kbd> + DRAG · DRAW WHITE</span><span><kbd>BACKSPACE</kbd> · ERASE ALL</span></div><div class="coords">WORLD COORDS <span id="coords">—, —</span></div></div>
+          <div class="map-overlay right-bottom"><div class="map-scale">SCROLL TO ZOOM · DRAG TO PAN</div></div>
+          <div id="emptyPrompt" class="empty-prompt"><span class="empty-icon">↥</span><strong>Load your first match</strong><p>Open a CS2 <b>.dem</b> file to review every round.</p><button id="centerOpen" class="primary-btn">Select demo file ↗</button><button id="trySample" class="plain-link">Or try the sample playback →</button></div>
+        </div>
+        <section class="event-dock" aria-label="Round event navigator">
+          <div class="event-head">
+            <div class="event-tabs"><button id="killTab" class="event-tab chosen">✕ KILL EVENTS <span id="killTotal">0</span></button><button id="utilTab" class="event-tab">◈ UTILITY <span id="utilityTotal">0</span></button></div>
+            <div class="event-filter"><details id="utilityTypePicker" class="utility-type-picker" hidden><summary aria-label="Filter grenade types">◈ Types <span id="utilityTypeSummary">All</span> ▾</summary><div class="utility-type-menu"><div class="utility-type-title">SHOW UTILITY</div><label><input type="checkbox" value="smoke" checked> Smoke</label><label><input type="checkbox" value="flash" checked> Flash</label><label><input type="checkbox" value="he" checked> HE grenade</label><label><input type="checkbox" value="fire" checked> Molotov / Incendiary</label><label><input type="checkbox" value="decoy" checked> Decoy</label><button id="allUtilityTypes" type="button">Select all</button></div></details><label id="eventPlayerLabel" for="eventPlayer">PLAYERS</label><select id="eventPlayer" aria-label="Filter kill involvement"><option value="all">All players</option></select><details id="utilityPlayerPicker" class="utility-type-picker utility-player-picker" hidden><summary aria-label="Filter utility by one or more players">◎ Players <span id="utilityPlayerSummary">All</span> ▾</summary><div class="utility-type-menu utility-player-menu"><div class="utility-type-title">UTILITY BY PLAYER</div><div class="picker-hint">Select multiple players. A throw appears if the selected player threw it or was affected.</div><div id="utilityPlayerOptions" class="utility-player-options"></div><button id="clearUtilityPlayers" type="button" hidden>Show all players</button></div></details><span class="event-explain" id="eventHint">Kills appear as they happen. Timeline markers remain seekable.</span></div>
+          </div>
+          <div id="eventList" class="event-list" aria-live="polite"></div>
+          <div id="utilityDetail" class="utility-detail" role="region" aria-label="Selected utility impact details" hidden></div>
+        </section>
+        <div class="utility-availability" id="utilityAvailability" role="status">Open a demo to see recorded utility</div>
+        <div class="transport-panel">
+          <div class="transport-top"><div class="transport-title"><span class="live-rect"></span> MATCH TIMELINE<span class="transport-sub" id="roundPhase">ROUND 01 · FREEZE TIME</span><span class="timeline-key"><span><b class="kd-key">K/D</b>KILL / DEATH</span><span><b class="util-key">U</b>UTILITY</span></span></div><div class="time-display"><strong id="elapsedTime">00:00</strong> <span>/</span> <span id="totalTime">00:00</span></div></div>
+          <div class="timeline-toolbar">
+              <div class="timeline-picker-container"><details id="timelinePlayerPicker" class="timeline-picker"><summary aria-label="Choose players for timeline only">◎ Timeline players <strong id="timelinePlayerSummary">All players</strong> ▾</summary><div class="timeline-picker-menu"><div class="picker-hint">Only affects the timeline. The map stays unchanged.</div><div id="timelinePlayerOptions" class="timeline-options"></div><button id="clearTimelinePlayers" class="plain-picker-btn" hidden>Clear timeline filter</button></div></details></div>
+              <div class="timeline-zoom-controls"><div class="timeline-scope" role="group" aria-label="Timeline view"><button type="button" id="timelineFullMatch" class="selected" aria-pressed="true">Full match</button><button type="button" id="timelineCurrentRound" aria-pressed="false">Current round</button></div><span id="timelineWindowLabel" hidden></span><button id="timelinePanBack" title="Pan timeline earlier" aria-label="Earlier section">◀</button><button id="timelineZoomOut" title="Zoom timeline out" aria-label="Zoom timeline out">−</button><strong id="timelineZoomValue">1×</strong><button id="timelineZoomIn" title="Zoom timeline in" aria-label="Zoom timeline in">+</button><button id="timelinePanForward" title="Pan timeline later" aria-label="Later section">▶</button><button id="timelineReset" title="Reset timeline to full match">Reset</button></div>
+            </div>
+          <div id="timelineTrack" class="timeline-track"><div id="roundMarks" class="round-marks"></div><div id="timelineEvents" class="timeline-events" aria-label="Kill and utility event shortcuts"></div><input type="range" id="timeSlider" min="0" max="100" step="1" value="0" aria-label="Seek across full match"/><div class="progress-line" id="progressLine"></div></div>
+          <div class="timeline-overview-row"><span id="timelineOffscreen"></span><div id="timelineOverview" class="timeline-overview" title="Click or drag to move the timeline window"><div id="timelineOverviewWindow" class="timeline-overview-window"></div><div id="timelineOverviewPlayhead" class="timeline-overview-playhead"></div></div><span class="overview-help">Scroll to zoom · Shift+scroll to pan</span></div>
+          <div class="transport-bottom"><div class="transport-left"><button class="skip-btn" id="previousRound" title="Previous round" aria-label="Previous round">|◀</button><button class="skip-btn" id="back5" title="Back 5 seconds" aria-label="Back 5 seconds">↶<small>5</small></button><button id="playPause" class="play-btn" title="Play / pause" aria-label="Play">▶</button><button class="skip-btn" id="forward5" title="Forward 5 seconds" aria-label="Forward 5 seconds">↷<small>5</small></button><button class="skip-btn" id="nextRound" title="Next round" aria-label="Next round">▶|</button></div><div class="transport-right"><span>SPEED</span><div id="speedButtons" class="speed-row"><button type="button" data-speed="0.25" aria-label="Play at quarter speed">0.25×</button><button data-speed="0.5">0.5×</button><button data-speed="1" class="selected">1×</button><button data-speed="2">2×</button><button data-speed="4">4×</button></div></div></div>
+        </div>
+        <div class="bottom-hint"><span><span class="key-dot ct"></span> COUNTER-TERRORISTS</span><span><span class="key-dot t"></span> TERRORISTS</span><span class="hint-right">▲ TIP = AIM DIRECTION · ✦ = WEAPON FIRE</span></div>
+      </div>
+    </main>
+
+    <aside class="right-panel">
+      <div class="roster-head"><div class="section-label">MATCH SCOREBOARD</div><span id="liveTick" class="tick-counter">TICK 00000</span></div>
+      <div class="scoreboard-caption">Select players to filter only the map and event panel. The timeline has its own independent player filter. Full inventories appear below names.</div><div class="selection-tools"><span id="selectedPlayerCount">All players</span><button id="clearPlayerFilter" hidden>Show everyone ↺</button></div>
+      <div class="scoreboard-key"><span>PLAYER</span><button class="score-sort-btn" data-sort="kills_total">K</button><button class="score-sort-btn" data-sort="assists_total">A</button><button class="score-sort-btn" data-sort="deaths_total">D</button><button class="score-sort-btn" data-sort="utility_damage_total">UD</button><button class="score-sort-btn" data-sort="enemies_flashed_total">EF</button><button class="score-sort-btn" data-sort="adr">ADR</button><button class="score-sort-btn" data-sort="balance">$</button></div>
+      <div class="side-card ct-card"><div class="side-header"><span class="side-ico ct-ico">CT</span><span id="ctTeamName" class="scoreboard-team-name">COUNTER-TERRORISTS</span><strong id="ctCount">0 / 5</strong></div><div id="ctPlayers" class="players"></div></div>
+      <div class="side-card t-card"><div class="side-header"><span class="side-ico t-ico">T</span><span id="tTeamName" class="scoreboard-team-name">TERRORISTS</span><strong id="tCount">0 / 5</strong></div><div id="tPlayers" class="players"></div></div>
+      <div class="scoreboard-key-foot">K Kills · A Assists · D Deaths · UD Utility Damage · EF Enemies Flashed · ADR Average Damage per Round · $ Money</div>
+      
+      <div class="right-footnote">Built for tactical review.<br>Runs on your own computer.</div>
+    </aside>
+  </div>
+  <div id="dropOverlay" class="drop-overlay" hidden><div class="drop-card"><div>↥</div><strong>DROP DEMO TO REPLAY</strong><span>CS2 .dem files only</span></div></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="helpDialog"><div class="modal-head"><strong>About OpenReplay</strong><button id="closeHelp" class="icon-button" aria-label="Close help">✕</button></div><p>Open a real CS2 <b>.dem</b> file to parse its rounds and player positions on this computer. Use the round list to jump, or scrub the full-match timeline. Toggle names and grid; maps with upper/lower radar textures default to stacked view. Choose Layered then select Upper or Lower without changing to stacked view.</p><p><b>Keyboard:</b> Space plays/pauses; Left/Right seek 5 seconds; Up/Down jump rounds.</p><p><b>Events:</b> Choose a kill to jump to its exact tick. Click scoreboard players to filter the map and event panel without changing the timeline. Use the separate Timeline players menu to follow individual events while keeping everyone visible. Zoom or pan the timeline with mouse wheel or the timeline controls. Kills reveal only when they happen. Use Types and the Utility Players multi-select to filter grenade types and throws involving several selected players without changing the radar player filter. Utility cards display damage and blinded players; click for a detailed per-player breakdown. Projectile paths use recorded samples, without invented endpoints. Smoke/fire boundaries and HE radii are illustrative, not game-engine simulations.</p><p><b>Map camera:</b> Scroll to zoom, drag to pan, Shift + drag to select players in a rectangle without pausing, Ctrl (either key) + drag to draw map-anchored white annotations, and Backspace to erase all drawing. Use Show everyone to clear a player selection. Reset View resets only camera zoom/pan, not annotations.</p><p><b>Privacy:</b> In local mode your demo is parsed on this computer. In web mode it is uploaded to the OpenReplay server for temporary processing and automatically expires. Map radar assets are requested separately when available.</p><button class="primary-btn" id="helpDone">Got it</button></dialog>
+  <script src="/static/app.js?v=27" defer></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Tested top-level requirements. Use pip-audit/Dependabot and regenerate a
+# hash-locked transitive lockfile before a high-trust public production launch.
+fastapi==0.128.2
+uvicorn==0.48.0
+python-multipart==0.0.29
+pandas==2.3.3
+numpy==2.3.5
+demoparser2==0.42.0

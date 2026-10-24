@@ -1,7 +1,7 @@
 # Security policy
 
 OpenReplay is a community project processing **untrusted Counter-Strike 2 demo files**.
-Supported versions: latest security build only.
+Supported versions: only the latest officially released version of OpenReplay receives security fixes. Older releases are unsupported.
 
 Please use GitHub's **Private vulnerability reporting** feature (Settings → Security → Private vulnerability reporting) after the repository owner enables it. Do not publicly publish exploit demonstrations or private replay contents before coordinated disclosure.
 

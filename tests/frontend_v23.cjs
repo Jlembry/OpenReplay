@@ -1,0 +1,15 @@
+'use strict';
+const assert=require('assert'),fs=require('fs'),path=require('path');
+const base=path.resolve(__dirname,'..');
+const html=fs.readFileSync(path.join(base,'static/index.html'),'utf8');
+const js=fs.readFileSync(path.join(base,'static/app.js'),'utf8');
+const css=fs.readFileSync(path.join(base,'static/styles.css'),'utf8');
+const speeds=html.split('id="speedButtons"')[1].split('</div>')[0];
+assert(speeds.indexOf('data-speed="0.25"')<speeds.indexOf('data-speed="0.5"'));
+assert(/\.speed-row button\[data-speed="0\.25"\]/.test(css));
+assert(html.includes('id="ctTeamName" class="scoreboard-team-name">COUNTER-TERRORISTS'));
+assert(html.includes('id="tTeamName" class="scoreboard-team-name">TERRORISTS'));
+assert(js.includes("radarLabel('BLIND '+flash.toFixed(1)+'s',xy[0],xy[1]+34,'#fff5a2',true)"));
+assert(js.includes("circleArea(u.pos,350,'#ffa96b'"));
+assert(!js.includes('≈350u'));
+console.log('PASS v23: speed placement, real/fallback team labels, compact utility text and HE radius');

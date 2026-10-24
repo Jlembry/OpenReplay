@@ -1,0 +1,25 @@
+const fs=require('fs'),assert=require('assert'),vm=require('vm'),path=require('path');
+const src=fs.readFileSync(path.join(__dirname,'../static/app.js'),'utf8');
+const html=fs.readFileSync(path.join(__dirname,'../static/index.html'),'utf8');
+function extract(name){const start=src.indexOf('function '+name+'(');assert(start>=0,name);let i=src.indexOf('{',start),d=0;for(;i<src.length;i++){if(src[i]==='{')d++;if(src[i]==='}'&&--d===0)return src.slice(start,i+1);}throw Error(name);}
+const state={utilityPlayers:new Set([0,2]),selectedPlayers:new Set([1]),floorView:'layered',layeredFloor:'upper',lowerImage:{},map:{lower_z_max:-400}};
+const ctx=vm.createContext({state,Math});
+for(const name of ['utilityPlayerMatched','visibleRadarFloor'])vm.runInContext(extract(name),ctx);
+let u={owner:3,damage:[{player:2}],blinded:[]};ctx.u=u;
+assert.equal(vm.runInContext('utilityPlayerMatched(u)',ctx),true);
+state.utilityPlayers=new Set([0]);assert.equal(vm.runInContext('utilityPlayerMatched(u)',ctx),false);
+u.owner=0;assert.equal(vm.runInContext('utilityPlayerMatched(u)',ctx),true);
+assert.equal(vm.runInContext("visibleRadarFloor('upper')",ctx),true);
+assert.equal(vm.runInContext("visibleRadarFloor('lower')",ctx),false);
+state.layeredFloor='lower';assert.equal(vm.runInContext("visibleRadarFloor('lower')",ctx),true);
+state.floorView='stacked';assert.equal(vm.runInContext("visibleRadarFloor('upper') && visibleRadarFloor('lower')",ctx),true);
+assert.equal(state.selectedPlayers.size,1,'utility filter must not modify radar selection');
+const begin=src.indexOf('const PRIMARY_WEAPONS='),end=src.indexOf('function normalizedLoadout(pid)');
+assert(begin>=0&&end>begin);
+const gear=vm.createContext({});vm.runInContext(src.slice(begin,end),gear);
+const types=['weapon_ak47','weapon_glock','weapon_knife_butterfly','weapon_smokegrenade','weapon_c4'];
+assert.deepEqual(types.map(v=>vm.runInContext('inventoryClass('+JSON.stringify(v)+')',gear)),['primary','pistol','knife','utility','bomb']);
+assert(html.includes('id="layerFloorUpper"')&&html.includes('id="layerFloorLower"')&&html.includes('id="utilityPlayerPicker"'));
+assert(src.includes("const order=['primary','pistol','knife','utility','equipment','bomb','other']"));
+assert(!html.includes('toggleLOS') && !src.includes('paintSightCones'));
+console.log('PASS v17 multi-player utility filtering, independent map, upper/lower layered control, category ordering, no LOS toggle');

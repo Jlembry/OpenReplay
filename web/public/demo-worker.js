@@ -19,6 +19,8 @@ onmessage=async ({data})=>{
     const output=OpenReplayAdapter.parse(file,String(data.filename||'demo.dem'),wasm_bindgen,msg=>postMessage({type:'progress',text:msg}));
     postMessage({type:'result',data:output});
   }catch(e){
-    postMessage({type:'error',message:String(e?.message||e||'Unrecognized demo').slice(0,500)});
+    const message=String(e?.message||e||'Unrecognized demo').slice(0,1000);
+    console.warn('OpenReplay WASM parser error (no file data logged):', message);
+    postMessage({type:'error',message});
   }
 };

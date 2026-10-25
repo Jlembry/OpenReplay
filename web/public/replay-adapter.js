@@ -9,9 +9,11 @@ const N=x=>{if(x===null||x===undefined||x==='')return null;const n=Number(x);ret
 const integer=(x,d=null)=>{const n=N(x);return n==null?d:Math.trunc(n);};
 const txt=x=>x==null?'':String(x);
 const yes=x=>x===true||x===1||x==='1'||txt(x).toLowerCase()==='true';
-const array=data=>{
+const array=(data,eventName='')=>{
  if(typeof data==='string'){try{data=JSON.parse(data);}catch{return [];}}
  if(Array.isArray(data))return data;
+ if(eventName && data && typeof data==='object' && data[eventName]!==undefined)return array(data[eventName]);
+ if(data?.events && Array.isArray(data.events))return data.events;
  if(data?.rows&&Array.isArray(data.rows))return data.rows;
  if(data?.data&&Array.isArray(data.data))return data.data;
  if(data?.columns&&Array.isArray(data?.data)&&Array.isArray(data.data[0]))return data.data.map(row=>Object.fromEntries(data.columns.map((k,i)=>[k,row[i]])));
@@ -23,7 +25,11 @@ const array=data=>{
  }
  return [];
 };
-const safeRows=(func)=>{try{return array(func()).filter(row=>integer(row.tick)!==null).sort((a,b)=>a.tick-b.tick);}catch{return [];}};
+const normalizedRows=(value,name='')=>array(value,name).filter(r=>r&&typeof r==='object').map(r=>{
+ const tick=integer(r.tick??r.game_tick??r.gameTick??r.tick_number??r.tickNumber);
+ return tick===null?null:{...r,tick};
+}).filter(Boolean).sort((a,b)=>a.tick-b.tick);
+const safeRows=(func)=>{try{return normalizedRows(func());}catch{return [];}};
 const sid=v=>{if(v===null||v===undefined||v==='')return null;return String(v);};
 const position=(r,p='')=>{
  const x=N(r[p+'X']??r[p+'x']),y=N(r[p+'Y']??r[p+'y']);
@@ -37,11 +43,21 @@ const kindFromWeapon=w=>{
  if(s.includes('decoy'))return 'decoy';return null;
 };
 function buildRounds(starts,ends,matches,freeze){
+ const isWarmup=r=>yes(r?.is_warmup_period??r?.is_warmup);
+ starts=starts.filter(r=>!isWarmup(r));
+ ends=ends.filter(r=>!isWarmup(r));
+ freeze=freeze.filter(r=>!isWarmup(r));
  let startTicks=[...new Set(starts.map(r=>integer(r.tick)).filter(n=>n!=null))].sort((a,b)=>a-b);
  const minMatch=matches.length?Math.min(...matches.map(r=>r.tick)):null;
- if(minMatch!==null)startTicks=startTicks.filter(t=>t>=minMatch);
+ // Some event streams place round_announce_match_start after the first round start.
+ // Never discard ALL actual round starts on the basis of this optional event alone.
+ if(minMatch!==null){const filtered=startTicks.filter(t=>t>=minMatch);if(filtered.length)startTicks=filtered;}
  if(!startTicks.length&&ends.length){startTicks=[Math.max(0,ends[0].tick-6400),...ends.slice(0,-1).map(r=>r.tick+1)];}
  const fr=freeze.map(r=>integer(r.tick)).filter(t=>t!=null);
+ // Some parser builds expose round_freeze_end but not round_start/round_end.
+ // This preserves the observed round boundaries, with estimated first/last periods.
+ if(!startTicks.length&&fr.length)startTicks=[...new Set(fr)].sort((a,b)=>a-b);
+
  return startTicks.map((start,i)=>{
   const next=startTicks[i+1],event=ends.find(e=>e.tick>=start&&(next===undefined||e.tick<next));
   const end=event?.tick??(next?next-1:start+115*RATE);
@@ -64,16 +80,36 @@ const trimTail=points=>{
 function parse(file,filename,wasm,progress){
  const header=wasm.parseHeader(file)||{};
  const map=txt(header.map_name||'unknown').toLowerCase();
- const eventsByType=new Map();
+ const eventsByType=new Map(),eventFailures=new Map();
  const event=(name,extra=false)=>{
    const key=name+String(extra);if(eventsByType.has(key))return eventsByType.get(key);
-   let rows=[];
-   if(extra)rows=safeRows(()=>wasm.parseEvent(file,name,['X','Y','Z','flash_duration']));
-   if(!rows.length)rows=safeRows(()=>wasm.parseEvent(file,name));
+   let rows=[],failures=[];
+   const attempts=extra?
+     [()=>wasm.parseEvent(file,name,['X','Y','Z','flash_duration']),()=>wasm.parseEvent(file,name)]:
+     [()=>wasm.parseEvent(file,name,[],['is_warmup_period','total_rounds_played']),()=>wasm.parseEvent(file,name)];
+   for(const attempt of attempts){
+     try{rows=normalizedRows(attempt(),name);if(rows.length)break;}
+     catch(e){failures.push(String(e?.message||e||'unknown parsing error').slice(0,160));}
+   }
+   if(failures.length)eventFailures.set(name,failures);
    eventsByType.set(key,rows);return rows;
  };
- const rounds=buildRounds(event('round_start'),event('round_end'),event('round_announce_match_start'),event('round_freeze_end'));
- if(!rounds.length)throw Error('No competitive rounds found. This demo may be incomplete or unsupported.');
+ const starts=event('round_start'),roundEnds=event('round_end'),freeze=event('round_freeze_end');
+ const official=event('round_officially_ended');
+ const matchStarts=event('round_announce_match_start');
+ const alternativeStarts=starts.length?starts:event('round_prestart');
+ const alternativeEnds=roundEnds.length?roundEnds:official;
+ const rounds=buildRounds(alternativeStarts,alternativeEnds,matchStarts,freeze);
+ if(!rounds.length){
+   let available=[];
+   try{const listed=wasm.listGameEvents?.(file);available=Array.isArray(listed)?listed.map(x=>String(x)).filter(x=>/round|match|freeze/.test(x)).slice(0,12):[];}
+   catch(e){eventFailures.set('listGameEvents',[String(e?.message||e).slice(0,120)]);}
+   const counts=`round_start=${starts.length}, round_end=${roundEnds.length}, round_freeze_end=${freeze.length}, round_officially_ended=${official.length}`;
+   const failures=[...eventFailures.entries()].filter(([key])=>/round|match|freeze/.test(key))
+     .slice(0,4).map(([key,msg])=>`${key}: ${msg[0]}`).join('; ');
+   // No demo content, player identities, or file bytes are included in this error.
+   throw Error(`Browser parser could not identify match rounds (${counts}). ${failures?`Parser errors: ${failures}. `:''}${available.length?`Available round events: ${available.join(', ')}. `:''}This WASM parser build may not support the recording. Try another demo or compare it in the local version.`);
+ }
  const first=rounds[0].start,last=rounds.at(-1).stop;
  progress('Reading sampled player positions…');
  const requested=Array.from({length:Math.ceil((last-first)/STRIDE)+1},(_,i)=>first+i*STRIDE).filter(t=>t<=last);

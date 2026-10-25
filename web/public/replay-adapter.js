@@ -5,11 +5,27 @@
 'use strict';
 self.OpenReplayAdapter=(()=>{
 const STRIDE=8, RATE=64;
+// serde_wasm_bindgen often returns JavaScript Maps, including nested Maps for
+// each game-event row. Normalize these before querying event fields.
+const plain = (value, depth=0) => {
+ if (depth>24 || value===null || typeof value!=='object') return value;
+ if (Object.prototype.toString.call(value)==='[object Map]') {
+   return Object.fromEntries(Array.from(value.entries(), ([key,part])=>[String(key),plain(part,depth+1)]));
+ }
+ if (Array.isArray(value)) return value.map(part=>plain(part,depth+1));
+ // Typed arrays should remain typed; they can represent property columns.
+ if (ArrayBuffer.isView(value)) return value;
+ if (Object.getPrototypeOf(value)===Object.prototype || Object.getPrototypeOf(value)===null) {
+   return Object.fromEntries(Object.entries(value).map(([key,part])=>[key,plain(part,depth+1)]));
+ }
+ return value;
+};
 const N=x=>{if(x===null||x===undefined||x==='')return null;const n=Number(x);return Number.isFinite(n)?n:null;};
 const integer=(x,d=null)=>{const n=N(x);return n==null?d:Math.trunc(n);};
 const txt=x=>x==null?'':String(x);
 const yes=x=>x===true||x===1||x==='1'||txt(x).toLowerCase()==='true';
 const array=(data,eventName='')=>{
+ data=plain(data);
  if(typeof data==='string'){try{data=JSON.parse(data);}catch{return [];}}
  if(Array.isArray(data))return data;
  if(eventName && data && typeof data==='object' && data[eventName]!==undefined)return array(data[eventName]);
@@ -78,9 +94,24 @@ const trimTail=points=>{
  return i&&points.length-i>=3&&last[0]-points[i][0]>=12?points.slice(0,i+1):points;
 };
 function parse(file,filename,wasm,progress){
- const header=wasm.parseHeader(file)||{};
+ const header=plain(wasm.parseHeader(file))||{};
  const map=txt(header.map_name||'unknown').toLowerCase();
  const eventsByType=new Map(),eventFailures=new Map();
+ // Fetch related round events together in modern WASM builds. This avoids
+ // reparsing the complete (potentially hundreds-of-MB) demo for each event.
+ // Fall back to individual calls for older bindings or unsupported bulk APIs.
+ const roundNames=['round_start','round_end','round_freeze_end','round_officially_ended','round_announce_match_start','round_prestart'];
+ if(typeof wasm.parseEvents==='function'){
+   try{
+     const batch=plain(wasm.parseEvents(file,roundNames,[],[]));
+     for(const name of roundNames){
+       const rows=normalizedRows(batch,name);
+       if(rows.length)eventsByType.set(name+'false',rows);
+     }
+   }catch(error){
+     eventFailures.set('parseEvents',[String(error?.message||error).slice(0,160)]);
+   }
+ }
  const event=(name,extra=false)=>{
    const key=name+String(extra);if(eventsByType.has(key))return eventsByType.get(key);
    let rows=[],failures=[];
@@ -108,7 +139,7 @@ function parse(file,filename,wasm,progress){
    const failures=[...eventFailures.entries()].filter(([key])=>/round|match|freeze/.test(key))
      .slice(0,4).map(([key,msg])=>`${key}: ${msg[0]}`).join('; ');
    // No demo content, player identities, or file bytes are included in this error.
-   throw Error(`Browser parser could not identify match rounds (${counts}). ${failures?`Parser errors: ${failures}. `:''}${available.length?`Available round events: ${available.join(', ')}. `:''}This WASM parser build may not support the recording. Try another demo or compare it in the local version.`);
+   throw Error(`Browser parser could not identify match rounds (${counts}). ${failures?`Parser errors: ${failures}. `:''}${available.length?`Available round events: ${available.join(', ')}. `:''}The WASM decoder could not decode entity-backed events from this recording. Use a current WASM parser build and compare against the local version.`);
  }
  const first=rounds[0].start,last=rounds.at(-1).stop;
  progress('Reading sampled player positions…');

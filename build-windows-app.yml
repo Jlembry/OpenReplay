@@ -1,0 +1,112 @@
+name: Build OpenReplay Windows App
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Beta version label (example: v1.0.0-beta.2)"
+        required: true
+        default: "v1.0.0-beta.2"
+      publish_release:
+        description: "Create a GitHub prerelease and attach the portable ZIP"
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Python 3.13 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: 'x64'
+
+      - name: Install Python runtime and packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: -r requirements.txt
+          python -m pip install --only-binary=:all: -r desktop-requirements.txt
+          python -m pip check
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile desktop.py server.py worker.py security.py parser.py
+          python desktop.py --self-test
+
+      - name: Build the portable app
+        run: |
+          python -m PyInstaller --clean --noconfirm OpenReplay.spec
+
+      - name: Smoke-test bundled executable
+        run: |
+          & .\dist\OpenReplay\OpenReplay.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "The packaged EXE failed its self-test" }
+
+      - name: Check bundled parser child and original demo cleanup
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP 'openreplay-parser-child'
+          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $testDir 'demo.dem'),[Text.Encoding]::ASCII.GetBytes('PBDEMS2bad'))
+          '{"id":"test","status":"parsing","filename":"bad.dem"}' | Set-Content -Path (Join-Path $testDir 'status.json') -Encoding utf8
+          # worker should reject malformed input and delete the original.
+          & .\dist\OpenReplay\OpenReplay.exe --worker-single $testDir
+          if ($LASTEXITCODE -ne 0) { throw "Bundled worker failed to launch" }
+          if (Test-Path (Join-Path $testDir 'demo.dem')) { throw "Worker did not clean up input" }
+          $status = Get-Content (Join-Path $testDir 'status.json') -Raw | ConvertFrom-Json
+          if ($status.status -ne 'error') { throw "Expected an error for malformed test input" }
+
+      - name: Include tester documentation
+        run: |
+          Copy-Item -Path 'LICENSE', 'BUILD_WINDOWS_APP.md' -Destination 'dist\OpenReplay'
+          python -m pip freeze | Out-File -FilePath 'dist\OpenReplay\BUNDLED_DEPENDENCIES.txt' -Encoding utf8
+
+      - name: Package ZIP and SHA256 checksum
+        env:
+          RELEASE_LABEL: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          $label = $env:RELEASE_LABEL
+          if (-not $label -or $label -eq 'main') { $label = 'testing' }
+          $label = $label -replace '[^0-9A-Za-z_.-]','-'
+          $archive = "OpenReplay-Windows-x64-$label.zip"
+          Compress-Archive -Path 'dist\OpenReplay' -DestinationPath (Join-Path 'release' $archive) -CompressionLevel Optimal
+          $sum = (Get-FileHash (Join-Path 'release' $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sum  $archive" | Set-Content 'release\SHA256SUMS.txt' -Encoding ascii
+          Write-Host "Created $archive with SHA-256 $sum"
+
+      - name: Upload downloadable build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenReplay-Windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish prerelease if requested
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_release == true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_LABEL: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          $tag = $env:RELEASE_LABEL
+          if (-not $tag.StartsWith('v')) { throw 'Release version must start with v' }
+          $assets = Get-ChildItem -Path release -File | ForEach-Object { $_.FullName }
+          gh release create $tag $assets --title "OpenReplay $tag" --prerelease --notes "Portable Windows x64 beta. Extract the ZIP and launch OpenReplay.exe. No Python installation required. Microsoft Edge WebView2 Runtime is needed for the dedicated desktop window."

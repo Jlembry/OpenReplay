@@ -66,12 +66,14 @@ def _desktop_main(argv: list[str]) -> int:
         from parser import extract_demo
         import demoparser2  # Assert the native extension was bundled successfully.
         from worker import run_limited
-        import webview
+        # Check that pywebview is bundled without importing its GUI backend.
+        # Importing GUI/.NET bindings on headless Windows CI can hang indefinitely.
+        from importlib.util import find_spec
+        assert find_spec('webview') is not None, 'Missing pywebview package'
         assert (STATIC/'index.html').is_file(), 'Missing bundled interface'
         assert (STATIC/'app.js').is_file(), 'Missing bundled JavaScript'
         assert (STATIC/'styles.css').is_file(), 'Missing bundled CSS'
         assert application is not None and callable(extract_demo) and callable(run_limited)
-        assert hasattr(webview, 'create_window')
         return 0
 
     os.environ['OPENREPLAY_MODE'] = 'local'

@@ -16,9 +16,9 @@ for (const required of [path.join(root, 'index.html'), pub, js, wasm]) {
   }
 }
 const code = fs.readFileSync(js, 'utf8');
-const expected = ['parseEvent','parseTicks','parseGrenades','parseHeader'];
+const expected = ['parseEvent','parseEvents','parseTicks','parseGrenades','parseHeader'];
 for (const method of expected) {
-  if (!code.includes(`__exports.${method} = function`)) {
+  if (!new RegExp(`\\b${method}\\b`).test(code)) {
     throw new Error(`Unsupported WASM binding: ${method} is missing. Do not deploy this candidate.`);
   }
 }

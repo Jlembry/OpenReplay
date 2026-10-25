@@ -24,14 +24,36 @@ if sys.stderr is None:
 
 
 def _worker_child(args: list[str]) -> int:
-    if len(args) != 1:
-        return 2
-    from worker import single
-    folder = Path(args[0]).resolve()
-    if not folder.is_dir() or not (folder / 'status.json').is_file():
-        return 2
-    single(folder)
-    return 0
+    # Diagnostics are opt-in for CI; normal users' replay paths and details are
+    # never written to a log unless explicitly enabled by the operator.
+    log_path = os.environ.get('OPENREPLAY_WORKER_DIAG_LOG', '').strip()
+
+    def diagnose(message: str) -> None:
+        if not log_path:
+            return
+        try:
+            with open(log_path, 'a', encoding='utf-8') as out:
+                out.write(message + '\n')
+        except OSError:
+            pass
+
+    try:
+        if len(args) != 1:
+            diagnose('Invalid worker argument count')
+            return 2
+        folder = Path(args[0]).resolve()
+        if not folder.is_dir() or not (folder / 'status.json').is_file():
+            diagnose('Missing parsing job directory or status.json')
+            return 2
+        diagnose('Starting isolated parser child')
+        from worker import single
+        single(folder)
+        diagnose('Parser child completed; status file updated')
+        return 0
+    except BaseException:
+        import traceback
+        diagnose('Parser child failed unexpectedly:\n' + traceback.format_exc())
+        return 1
 
 
 def _start_backend():

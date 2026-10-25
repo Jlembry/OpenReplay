@@ -63,7 +63,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Application dependency installation failed' }
           Write-Host 'Install Windows desktop packaging dependencies:'
           Get-Content desktop-requirements.txt
-          python -m pip install --only-binary=:all: -r desktop-requirements.txt
+          # pywebview depends on proxy_tools, which is published only as a source
+          # distribution. Keep --only-binary for runtime/native parser packages
+          # above, but permit source distributions for desktop dependencies.
+          python -m pip install --prefer-binary -r desktop-requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
           Write-Host 'Check installed distribution metadata, without importing Windows GUI:'
           python -c "from importlib.metadata import version; print('pywebview',version('pywebview')); print('pyinstaller',version('pyinstaller'))"

@@ -152,13 +152,28 @@ jobs:
           $testDir = Join-Path $env:RUNNER_TEMP 'openreplay-parser-child'
           New-Item -ItemType Directory -Force -Path $testDir | Out-Null
           [IO.File]::WriteAllBytes((Join-Path $testDir 'demo.dem'),[Text.Encoding]::ASCII.GetBytes('PBDEMS2bad'))
-          '{"id":"test","status":"parsing","filename":"bad.dem"}' | Set-Content -Path (Join-Path $testDir 'status.json') -Encoding utf8
-          # worker should reject malformed input and delete the original.
+          '{"id":"test","status":"parsing","filename":"bad.dem"}' | Set-Content -Path (Join-Path $testDir 'status.json') -Encoding utf8NoBOM
+          $env:OPENREPLAY_WORKER_DIAG_LOG = Join-Path $testDir 'worker-diagnostic.log'
+          if (Test-Path $env:OPENREPLAY_WORKER_DIAG_LOG) { Remove-Item $env:OPENREPLAY_WORKER_DIAG_LOG -Force }
+          # A corrupt demo is expected to become status=error, while the worker
+          # must exit cleanly and remove the original untrusted input file.
           python ci/run_checked.py --timeout 90 -- .\dist\OpenReplay\OpenReplay.exe --worker-single $testDir
-          if ($LASTEXITCODE -ne 0) { throw 'Bundled worker failed or timed out' }
-          if (Test-Path (Join-Path $testDir 'demo.dem')) { throw "Worker did not clean up input" }
+          $workerExitCode = $LASTEXITCODE
+          if (Test-Path $env:OPENREPLAY_WORKER_DIAG_LOG) {
+            Write-Host '--- Frozen parser child diagnostics ---'
+            Get-Content $env:OPENREPLAY_WORKER_DIAG_LOG
+          } else {
+            Write-Host 'No frozen parser child diagnostics were created.'
+          }
+          if (Test-Path (Join-Path $testDir 'status.json')) {
+            Write-Host '--- Parser job result ---'
+            Get-Content (Join-Path $testDir 'status.json')
+          }
+          if ($workerExitCode -ne 0) { throw "Bundled worker crashed or timed out (exit $workerExitCode)" }
+          if (Test-Path (Join-Path $testDir 'demo.dem')) { throw 'Worker did not delete the malformed input' }
           $status = Get-Content (Join-Path $testDir 'status.json') -Raw | ConvertFrom-Json
-          if ($status.status -ne 'error') { throw "Expected an error for malformed test input" }
+          if ($status.status -ne 'error') { throw "Expected status=error for malformed input, got $($status.status)" }
+          Write-Host 'Bundled worker rejected malformed demo, set status=error, and deleted the original.'
 
       - name: Include tester documentation
         run: |

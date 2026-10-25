@@ -126,8 +126,25 @@ jobs:
         timeout-minutes: 3
         run: |
           Write-Host 'Checking frozen executable and bundled static assets...'
-          python ci/run_checked.py --timeout 90 -- .\dist\OpenReplay\OpenReplay.exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw 'The packaged EXE failed its self-test or timed out' }
+          # A windowed PyInstaller EXE has no stdout/stderr. Direct its self-test
+          # to a log file, print that file, and NEVER show modal error dialogs.
+          $env:OPENREPLAY_SELF_TEST_LOG = Join-Path $env:RUNNER_TEMP 'openreplay-frozen-self-test.log'
+          if (Test-Path $env:OPENREPLAY_SELF_TEST_LOG) {
+            Remove-Item $env:OPENREPLAY_SELF_TEST_LOG -Force
+          }
+          python ci/run_checked.py --timeout 75 -- .\dist\OpenReplay\OpenReplay.exe --self-test
+          $testExitCode = $LASTEXITCODE
+          if (Test-Path $env:OPENREPLAY_SELF_TEST_LOG) {
+            Write-Host '--- Frozen self-test diagnostic log ---'
+            Get-Content $env:OPENREPLAY_SELF_TEST_LOG
+            Write-Host '--- End diagnostic log ---'
+          } else {
+            Write-Host 'No diagnostic log was created by the EXE.'
+          }
+          if ($testExitCode -ne 0) {
+            throw "The packaged EXE failed the self-test (exit $testExitCode). See the diagnostic log above."
+          }
+          Write-Host 'Frozen executable self-test passed.'
 
       - name: Check bundled parser child and original demo cleanup
         timeout-minutes: 3

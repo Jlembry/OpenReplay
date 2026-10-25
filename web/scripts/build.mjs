@@ -1,28 +1,51 @@
 import fs from 'node:fs';
 import path from 'node:path';
-const root=path.resolve(import.meta.dirname,'..');
-const pub=path.join(root,'public'), dist=path.join(root,'dist');
-fs.rmSync(dist,{recursive:true,force:true});fs.mkdirSync(dist,{recursive:true});
-fs.cpSync(pub,dist,{recursive:true});fs.copyFileSync(path.join(root,'index.html'),path.join(dist,'index.html'));
-const pkg=path.join(root,'node_modules','demoparser2');
-if(!fs.existsSync(pkg))throw Error('Run npm install in web/ first. No WASM library installed.');
-const files=[];
-function walk(dir){if(!fs.existsSync(dir))return;for(const name of fs.readdirSync(dir)){
- const full=path.join(dir,name),stat=fs.statSync(full);
- if(stat.isDirectory())walk(full);else files.push(full);
-}}
-walk(pkg);
-const js=files.find(f=>path.basename(f)==='demoparser2.js');
-const wasm=files.find(f=>path.basename(f)==='demoparser2_bg.wasm');
-if(!js||!wasm)throw Error('The installed demoparser2 version lacks the expected browser WASM artifacts. Do not deploy.');
-const code=fs.readFileSync(js,'utf8');
-if(!code.includes('wasm_bindgen'))throw Error('WASM package is not a compatible no-modules browser build. Do not deploy.');
-for(const name of ['parseTicks','parseEvent','parseGrenades','parseHeader']){
- if(!code.includes(name))throw Error('Incompatible WASM export: '+name);
+
+// Build the static site using matching WASM + no-modules JS from the upstream
+// browser demo. Never substitute the native npm or Python distribution.
+const root = path.resolve(import.meta.dirname, '..');
+const pub = path.join(root, 'public');
+const vendor = path.join(root, 'vendor');
+const dest = path.join(root, 'dist');
+const js = path.join(vendor, 'demoparser2.js');
+const wasm = path.join(vendor, 'demoparser2_bg.wasm');
+
+for (const required of [path.join(root, 'index.html'), pub, js, wasm]) {
+  if (!fs.existsSync(required)) {
+    throw new Error(`Missing required web asset: ${required}. The workflow must fetch upstream WASM before building.`);
+  }
 }
-const vendor=path.join(dist,'vendor');fs.mkdirSync(vendor,{recursive:true});
-fs.copyFileSync(js,path.join(vendor,'demoparser2.js'));
-fs.copyFileSync(wasm,path.join(vendor,'demoparser2_bg.wasm'));
-const license=files.find(f=>/^license(\.md|\.txt)?$/i.test(path.basename(f)));
-if(license)fs.copyFileSync(license,path.join(vendor,'LICENSE-demoparser2.txt'));
-console.log('Built static OpenReplay candidate:',dist,'WASM bytes:',fs.statSync(wasm).size);
+const code = fs.readFileSync(js, 'utf8');
+const expected = ['parseEvent','parseTicks','parseGrenades','parseHeader'];
+for (const method of expected) {
+  if (!code.includes(`__exports.${method} = function`)) {
+    throw new Error(`Unsupported WASM binding: ${method} is missing. Do not deploy this candidate.`);
+  }
+}
+if (!code.includes('wasm_bindgen')) {
+  throw new Error('WASM bindings are not compatible with the no-modules Web Worker.');
+}
+const fd = fs.openSync(wasm, 'r');
+let magic;
+try {
+  magic = Buffer.alloc(8);
+  if (fs.readSync(fd, magic, 0, 8, 0) !== 8) throw new Error('WASM file is too short.');
+} finally { fs.closeSync(fd); }
+if (magic.subarray(0, 4).toString('hex') !== '0061736d' || magic.readUInt32LE(4) !== 1) {
+  throw new Error('Invalid or unsupported WASM binary; do not deploy.');
+}
+
+fs.rmSync(dest, { recursive: true, force: true });
+fs.mkdirSync(dest, { recursive: true });
+fs.cpSync(pub, dest, { recursive: true });
+fs.copyFileSync(path.join(root, 'index.html'), path.join(dest, 'index.html'));
+const out = path.join(dest, 'vendor');
+fs.mkdirSync(out, { recursive: true });
+fs.copyFileSync(js, path.join(out, 'demoparser2.js'));
+fs.copyFileSync(wasm, path.join(out, 'demoparser2_bg.wasm'));
+for (const extra of ['LICENSE-demoparser.txt', 'UPSTREAM_COMMIT.txt']) {
+  if (fs.existsSync(path.join(vendor, extra))) fs.copyFileSync(path.join(vendor, extra), path.join(out, extra));
+}
+console.log(`Built web candidate: ${dest}`);
+console.log(`WASM size: ${fs.statSync(wasm).size} bytes`);
+console.log(`Upstream commit: ${fs.existsSync(path.join(vendor, 'UPSTREAM_COMMIT.txt')) ? fs.readFileSync(path.join(vendor, 'UPSTREAM_COMMIT.txt'), 'utf8').trim() : '(not recorded)'}`);

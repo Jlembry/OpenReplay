@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Beta version label (example: v1.0.0-beta.2)"
+        description: "v1.0.0-beta.2"
         required: true
         default: "v1.0.0-beta.2"
       publish_release:
@@ -56,12 +56,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Python source compilation failed' }
           Write-Host 'Python syntax OK.'
 
-      - name: Headless application self-test
+      # These checks isolate dependency failures before PyInstaller runs.
+      # Each package starts in a separate interpreter and gets a hard deadline.
+      - name: Diagnose Python package imports
         timeout-minutes: 3
         run: |
+          foreach ($module in @('fastapi','pandas','numpy','demoparser2')) {
+            Write-Host "Probing $module ..."
+            python ci/run_checked.py --timeout 20 -- python -u -c "import importlib; importlib.import_module('$module'); print('$module import OK', flush=True)"
+            if ($LASTEXITCODE -ne 0) { throw "Import of $module failed/hung. Check installed version and Python compatibility." }
+          }
+
+      - name: Headless application self-test
+        timeout-minutes: 2
+        run: |
           Write-Host 'Checking application imports and static assets (no GUI)...'
-          python ci/run_checked.py --timeout 90 -- python -u desktop.py --self-test
-          if ($LASTEXITCODE -ne 0) { throw 'Headless application self-test failed or timed out' }
+          python ci/run_checked.py --timeout 55 -- python -u desktop.py --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Headless application self-test failed or timed out; see last logged import and stack trace above.' }
           Write-Host 'Application self-test OK.'
 
       - name: Build the portable app

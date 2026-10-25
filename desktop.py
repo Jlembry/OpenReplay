@@ -61,20 +61,35 @@ def _desktop_main(argv: list[str]) -> int:
     if argv and argv[0] == '--worker-single':
         return _worker_child(argv[1:])
     if argv and argv[0] == '--self-test':
-        # Exercise frozen imports, static assets, and the local API without a GUI.
-        from server import STATIC, application
-        from parser import extract_demo
-        import demoparser2  # Assert the native extension was bundled successfully.
-        from worker import run_limited
-        # Check that pywebview is bundled without importing its GUI backend.
-        # Importing GUI/.NET bindings on headless Windows CI can hang indefinitely.
-        from importlib.util import find_spec
-        assert find_spec('webview') is not None, 'Missing pywebview package'
-        assert (STATIC/'index.html').is_file(), 'Missing bundled interface'
-        assert (STATIC/'app.js').is_file(), 'Missing bundled JavaScript'
-        assert (STATIC/'styles.css').is_file(), 'Missing bundled CSS'
-        assert application is not None and callable(extract_demo) and callable(run_limited)
-        return 0
+        # Keep every checkpoint visible in GitHub Actions even when a native
+        # import stalls. Dump the Python stack instead of waiting in silence.
+        import faulthandler
+        faulthandler.enable()
+        faulthandler.dump_traceback_later(15, repeat=True, file=sys.stderr)
+        def check(message: str):
+            print('[OpenReplay self-test] ' + message, flush=True)
+        try:
+            check('1/7: Starting the self-test')
+            check('2/7: Importing FastAPI backend')
+            from server import STATIC, application
+            check('3/7: Importing replay parser')
+            from parser import extract_demo
+            check('4/7: Importing native demoparser2 extension')
+            import demoparser2
+            check('5/7: Importing parsing worker')
+            from worker import run_limited
+            check('6/7: Checking pywebview installation without starting a GUI')
+            from importlib.util import find_spec
+            assert find_spec('webview') is not None, 'Missing pywebview package'
+            check('7/7: Checking packaged static files and entry points')
+            assert (STATIC/'index.html').is_file(), 'Missing bundled interface'
+            assert (STATIC/'app.js').is_file(), 'Missing bundled JavaScript'
+            assert (STATIC/'styles.css').is_file(), 'Missing bundled CSS'
+            assert application is not None and callable(extract_demo) and callable(run_limited)
+            check('PASS: application dependencies and assets verified')
+            return 0
+        finally:
+            faulthandler.cancel_dump_traceback_later()
 
     os.environ['OPENREPLAY_MODE'] = 'local'
     # This executable must never be repurposed as an internet-facing server.

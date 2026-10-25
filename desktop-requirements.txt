@@ -1,0 +1,4 @@
+# Build dependencies, installed in addition to requirements.txt on Windows.
+# Only the build machine needs these. Testers do not install anything here.
+pyinstaller==6.22.3
+pywebview==6.2.1

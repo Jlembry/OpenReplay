@@ -1,6 +1,6 @@
 """OpenReplay: private local viewer and anonymous web API. No sign-in required."""
 from __future__ import annotations
-import atexit, hashlib, hmac, json, os, re, secrets, shutil, tempfile, threading, time, uuid
+import atexit, hashlib, hmac, json, os, re, secrets, shutil, sys, tempfile, threading, time, uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from security import (MODE, WEB_HOST, COOKIE, browser_allowed, csrf_value, new_session,
                       owner_hash, require_session, same_origin, session_id, set_cookie, valid_host)
 
-BASE=Path(__file__).resolve().parent
+BASE=Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))  # PyInstaller asset location
 STATIC=BASE/'static'
 MAX_FILE_BYTES=int(os.getenv('OPENREPLAY_MAX_UPLOAD_MB','900'))*1024*1024
 BODY_LIMIT=MAX_FILE_BYTES+1024*1024

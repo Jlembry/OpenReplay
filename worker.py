@@ -26,7 +26,10 @@ def single(folder:Path):
         atomic_json(folder/'status.json',meta)
 
 def run_limited(folder:Path,timeout:int=240):
-    cmd=[sys.executable,__file__,'--single',str(folder)]
+    # A frozen application uses its own executable for the parsing child.
+    # Normal source installations continue using the Python worker script.
+    cmd=([sys.executable,'--worker-single',str(folder)] if getattr(sys,'frozen',False)
+         else [sys.executable,__file__,'--single',str(folder)])
     opts={}
     if os.name=='posix':
         def limits():
@@ -39,6 +42,7 @@ def run_limited(folder:Path,timeout:int=240):
             resource.setrlimit(resource.RLIMIT_CORE,(0,0))
         opts['preexec_fn']=limits
         opts['start_new_session']=True
+    if os.name=='nt':opts['creationflags']=subprocess.CREATE_NO_WINDOW
     proc=subprocess.Popen(cmd, stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,**opts)
     try: proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

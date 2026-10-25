@@ -79,3 +79,49 @@ test('filters explicitly marked warmup rounds',()=>{
  assert.equal(rounds.length,1);
  assert.equal(rounds[0].start,1000);
 });
+
+
+test('serde-wasm-bindgen Map results decode as header, events and tick rows',()=>{
+ const row=(fields)=>new Map(Object.entries(fields));
+ const mock={
+   parseHeader:()=>new Map([['map_name','de_anubis']]),
+   parseEvent:(_f,name)=>new Map([[name,name==='round_start'?[row({tick:100})]:name==='round_end'?[row({tick:400,winner:3,reason:8})]:[]]]),
+   parseTicks:()=>[row({tick:100,steamid:'76561110000000001',name:'Alpha',X:12,Y:25,Z:0,team_num:3,health:100}),
+                  row({tick:100,steamid:'76561110000000002',name:'Bravo',X:16,Y:30,Z:0,team_num:2,health:100})],
+   parseGrenades:()=>[]
+ };
+ const got=parse(new Uint8Array([1]),'game.dem',mock,()=>{});
+ assert.equal(got.map,'de_anubis');
+ assert.equal(got.rounds.length,1);
+ assert.equal(got.players.length,2);
+ assert.equal(got.rounds[0].end,400);
+});
+
+test('numeric columns in Map form are decoded into rows',()=>{
+ const mock={parseHeader:()=>new Map([['map_name','de_anubis']]),
+   parseEvent:(_f,name)=>new Map([[name,name==='round_start'?[{tick:100}]:name==='round_end'?[{tick:400,winner:3,reason:8}]:[]]]),
+   parseTicks:()=>new Map([
+      ['tick',new Int32Array([100,100])],['X',new Float32Array([12,16])],['Y',new Float32Array([25,30])],
+      ['steamid',['1','2']],['name',['Alpha','Bravo']],['team_num',[3,2]],['health',[100,100]]]),
+   parseGrenades:()=>[]};
+ const got=parse(new Uint8Array([1]),'game.dem',mock,()=>{});
+ assert.equal(got.frames[0][1].length,2);
+});
+
+
+test('bulk parseEvents round events avoid redundant full-file reads',()=>{
+ const requests=[];
+ const mock={parseHeader:()=>({map_name:'de_mirage'}),
+   parseEvents:(_f,names)=>{
+     requests.push('batch');
+     assert.ok(names.includes('round_start'));
+     return new Map([['round_start',[{tick:100}]],['round_end',[{tick:400,winner:3,reason:8}]]]);
+   },
+   parseEvent:(_f,name)=>{
+     if(['round_start','round_end'].includes(name))throw Error('round event should come from batch');
+     return [];
+   },
+   parseTicks:()=>[{tick:100,steamid:'1',name:'Alpha',X:11,Y:22,team_num:3,health:100}],parseGrenades:()=>[]};
+ const got=parse(new Uint8Array([1]),'game.dem',mock,()=>{});
+ assert.equal(got.rounds.length,1);assert.deepEqual(requests,['batch']);
+});

@@ -1,0 +1,59 @@
+name: OpenReplay Web Candidate Build
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy candidate to GitHub Pages (only after checking real demos)"
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+    paths: ['web/**','.github/workflows/deploy-web.yml']
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: openreplay-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned parser dependency
+        working-directory: web
+        run: npm install --no-audit --no-fund
+      - name: Run adapter tests
+        working-directory: web
+        run: npm test
+      - name: Build static WASM site
+        working-directory: web
+        run: npm run build
+      - name: Upload candidate to workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenReplay-Web-Candidate
+          path: web/dist
+          retention-days: 7
+      - if: ${{ inputs.deploy == true }}
+        uses: actions/configure-pages@v5
+      - if: ${{ inputs.deploy == true }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: web/dist
+  deploy:
+    if: ${{ inputs.deploy == true }}
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

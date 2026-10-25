@@ -14,12 +14,21 @@ def atomic_json(path:Path, data:dict):
 
 def single(folder:Path):
     source=folder/'demo.dem'
-    meta=json.loads((folder/'status.json').read_text(encoding='utf-8'))
+    meta={}
     try:
+        # Accept a UTF-8 BOM for interoperability with Windows PowerShell,
+        # though OpenReplay itself writes plain UTF-8 JSON.
+        loaded=json.loads((folder/'status.json').read_text(encoding='utf-8-sig'))
+        if not isinstance(loaded,dict):
+            raise ValueError('Job status must be a JSON object')
+        meta=loaded
         data=extract_demo(source,meta.get('filename','recording.dem'))
         atomic_json(folder/'replay.json',data)
         meta.update(status='ready', map=data['map'],rounds=len(data['rounds']),players=len(data['players']))
-    except (Exception,MemoryError):
+    except BaseException:
+        # The Rust/PyO3 demo parser can raise PanicException, a BaseException
+        # rather than a normal Exception, on malformed input. This disposable
+        # parsing worker must still mark the job failed and delete the demo.
         meta.update(status='error',error='The recording could not be parsed.')
     finally:
         source.unlink(missing_ok=True)

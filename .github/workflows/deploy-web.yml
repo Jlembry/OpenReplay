@@ -1,75 +1,101 @@
 name: OpenReplay Web Candidate Build
+
 on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: "Deploy candidate to GitHub Pages (ONLY after real demo parity testing)"
+        description: "Deploy to GitHub Pages (ONLY after real .dem verification)"
         required: true
-        default: false
         type: boolean
+        default: false
   push:
     branches: [main]
     paths:
       - 'web/**'
       - '.github/workflows/deploy-web.yml'
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: openreplay-pages
   cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out OpenReplay
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Fetch official browser WebAssembly build
+      - name: Install Rust WASM build tools
         shell: bash
         run: |
           set -euo pipefail
-          # The Python and native Node 0.42.0 packages CANNOT run on GitHub Pages.
-          # This is the author's separate browser WASM example, not an npm dependency.
-          git clone --depth 1 https://github.com/LaihoE/demoparser-wasm-demo.git "$RUNNER_TEMP/openreplay-upstream-wasm"
-          test -s "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2.js"
-          test -s "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2_bg.wasm"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq protobuf-compiler
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --version 0.13.1 --locked
+      - name: Compile parser from current Rust source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # DO NOT use demoparser-wasm-demo/pkg here: its old binary cannot
+          # necessarily decode modern Source 2 entity streams.
+          git clone --depth 1 https://github.com/LaihoE/demoparser.git "$RUNNER_TEMP/openreplay-parser-source"
           mkdir -p web/vendor
-          cp "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2.js" web/vendor/
-          cp "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2_bg.wasm" web/vendor/
-          git -C "$RUNNER_TEMP/openreplay-upstream-wasm" rev-parse HEAD > web/vendor/UPSTREAM_COMMIT.txt
-          curl --fail --location --silent --show-error https://raw.githubusercontent.com/LaihoE/demoparser/main/LICENSE -o web/vendor/LICENSE-demoparser.txt
-          echo "Upstream commit: $(cat web/vendor/UPSTREAM_COMMIT.txt)"
+          (
+            cd "$RUNNER_TEMP/openreplay-parser-source/src/wasm"
+            wasm-pack build --release --target no-modules \
+              --out-dir "$GITHUB_WORKSPACE/web/vendor" \
+              --out-name demoparser2
+          )
+          test -s web/vendor/demoparser2.js
+          test -s web/vendor/demoparser2_bg.wasm
+          git -C "$RUNNER_TEMP/openreplay-parser-source" rev-parse HEAD > web/vendor/UPSTREAM_COMMIT.txt
+          cp "$RUNNER_TEMP/openreplay-parser-source/LICENSE" web/vendor/LICENSE-demoparser.txt
+          echo "Compiled parser commit: $(cat web/vendor/UPSTREAM_COMMIT.txt)"
           sha256sum web/vendor/demoparser2.js web/vendor/demoparser2_bg.wasm
-      - name: Run adapter unit tests
+      - name: Verify adapter regression tests
         working-directory: web
         run: npm test
+      - name: Verify worker and adapter JavaScript syntax
+        run: |
+          node --check web/public/demo-worker.js
+          node --check web/public/replay-adapter.js
       - name: Build browser-only candidate
         working-directory: web
         run: npm run build
-      - name: Upload candidate to workflow artifacts
+      - name: Upload test candidate
         uses: actions/upload-artifact@v4
         with:
           name: OpenReplay-Web-Candidate
           path: web/dist
           retention-days: 7
-      - if: ${{ inputs.deploy == true }}
+      - name: Configure GitHub Pages (explicit opt-in only)
+        if: ${{ inputs.deploy == true }}
         uses: actions/configure-pages@v5
-      - if: ${{ inputs.deploy == true }}
+      - name: Upload GitHub Pages artifact (explicit opt-in only)
+        if: ${{ inputs.deploy == true }}
         uses: actions/upload-pages-artifact@v4
         with:
           path: web/dist
+
   deploy:
     if: ${{ inputs.deploy == true }}
     needs: build
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
-      - name: Deploy
+      - name: Deploy website
         id: deployment
         uses: actions/deploy-pages@v4

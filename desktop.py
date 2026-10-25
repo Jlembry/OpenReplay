@@ -12,6 +12,16 @@ import time
 import webbrowser
 from pathlib import Path
 
+# PyInstaller windowed/noconsole executables have no attached standard streams.
+# Keep them usable for dependencies that log while the app starts or parses.
+# These devnull handles are only used when the bootloader provided None.
+if sys.stdin is None:
+    sys.stdin = open(os.devnull, 'r', encoding='utf-8')
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
 
 def _worker_child(args: list[str]) -> int:
     if len(args) != 1:
@@ -61,38 +71,53 @@ def _desktop_main(argv: list[str]) -> int:
     if argv and argv[0] == '--worker-single':
         return _worker_child(argv[1:])
     if argv and argv[0] == '--self-test':
-        # Keep every checkpoint visible in GitHub Actions even when a native
-        # import stalls. Dump the Python stack instead of waiting in silence.
+        # The packaged EXE has console=False. On Windows, sys.stdout and
+        # sys.stderr can be None; diagnostics must not launch a GUI error box.
+        # CI supplies a log path and prints its contents after the process exits.
+        import contextlib
         import faulthandler
-        faulthandler.enable()
-        faulthandler.dump_traceback_later(15, repeat=True, file=sys.stderr)
-        def check(message: str):
-            print('[OpenReplay self-test] ' + message, flush=True)
-        try:
-            check('1/7: Starting the self-test')
-            check('2/7: Importing FastAPI backend')
-            from server import STATIC, application
-            check('3/7: Importing replay parser')
-            from parser import extract_demo
-            check('4/7: Importing native demoparser2 extension')
-            import demoparser2
-            check('5/7: Importing parsing worker')
-            from worker import run_limited
-            # Do not call importlib.util.find_spec('webview') or import
-            # webview here. On Windows CI runners, package discovery may
-            # initialize pythonnet/.NET discovery or hang before a GUI exists.
-            # The workflow validates the installed distribution via metadata
-            # separately, and a real Windows launch exercises the GUI.
-            check('6/7: Desktop window dependency checked by CI without GUI imports')
-            check('7/7: Checking packaged static files and entry points')
-            assert (STATIC/'index.html').is_file(), 'Missing bundled interface'
-            assert (STATIC/'app.js').is_file(), 'Missing bundled JavaScript'
-            assert (STATIC/'styles.css').is_file(), 'Missing bundled CSS'
-            assert application is not None and callable(extract_demo) and callable(run_limited)
-            check('PASS: application dependencies and assets verified')
-            return 0
-        finally:
-            faulthandler.cancel_dump_traceback_later()
+        import traceback
+
+        report_path = os.environ.get('OPENREPLAY_SELF_TEST_LOG', '').strip()
+        report = Path(report_path) if report_path else None
+        with (report.open('w', encoding='utf-8') if report else contextlib.nullcontext()) as log_file:
+            diagnostic_stream = log_file or sys.stderr
+
+            def check(message: str):
+                line = '[OpenReplay self-test] ' + message
+                print(line, flush=True)
+                if log_file is not None:
+                    log_file.write(line + '\n')
+                    log_file.flush()
+
+            watchdog_started = False
+            try:
+                faulthandler.enable(file=diagnostic_stream)
+                faulthandler.dump_traceback_later(15, repeat=True, file=diagnostic_stream)
+                watchdog_started = True
+                check('1/7: Starting the self-test')
+                check('2/7: Importing FastAPI backend')
+                from server import STATIC, application
+                check('3/7: Importing replay parser')
+                from parser import extract_demo
+                check('4/7: Importing native demoparser2 extension')
+                import demoparser2
+                check('5/7: Importing parsing worker')
+                from worker import run_limited
+                check('6/7: GUI import deliberately excluded from headless test')
+                check('7/7: Checking packaged static files and entry points')
+                assert (STATIC / 'index.html').is_file(), 'Missing bundled interface'
+                assert (STATIC / 'app.js').is_file(), 'Missing bundled JavaScript'
+                assert (STATIC / 'styles.css').is_file(), 'Missing bundled CSS'
+                assert application is not None and callable(extract_demo) and callable(run_limited)
+                check('PASS: application dependencies and assets verified')
+                return 0
+            except BaseException:
+                traceback.print_exc(file=diagnostic_stream)
+                return 1
+            finally:
+                if watchdog_started:
+                    faulthandler.cancel_dump_traceback_later()
 
     os.environ['OPENREPLAY_MODE'] = 'local'
     # This executable must never be repurposed as an internet-facing server.
@@ -129,8 +154,15 @@ def _desktop_main(argv: list[str]) -> int:
 
 
 if __name__ == '__main__':
+    args = sys.argv[1:]
     try:
-        raise SystemExit(_desktop_main(sys.argv[1:]))
+        raise SystemExit(_desktop_main(args))
     except Exception as exc:
-        _error_box('OpenReplay could not start.\n\n'+str(exc))
+        # Background CI checks and parser workers must never display a modal
+        # MessageBox: the GitHub runner cannot dismiss it, causing timeouts.
+        if args and args[0] in {'--self-test', '--worker-single'}:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            raise SystemExit(1)
+        _error_box('OpenReplay could not start.\n\n' + str(exc))
         raise SystemExit(1)

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "v1.0.0-beta.2"
+        description: "example: v1.0.0-beta.2"
         required: true
         default: "v1.0.0-beta.2"
       publish_release:
@@ -66,6 +66,15 @@ jobs:
             python ci/run_checked.py --timeout 20 -- python -u -c "import importlib; importlib.import_module('$module'); print('$module import OK', flush=True)"
             if ($LASTEXITCODE -ne 0) { throw "Import of $module failed/hung. Check installed version and Python compatibility." }
           }
+
+      # Read the installed distribution metadata, not the pywebview module:
+      # importing/finding the GUI runtime can block on a headless Windows runner.
+      - name: Check pywebview installation without importing GUI
+        timeout-minutes: 1
+        run: |
+          Write-Host 'Reading installed pywebview version from package metadata...'
+          python ci/run_checked.py --timeout 15 -- python -u -c "from importlib.metadata import version; print('pywebview ' + version('pywebview'), flush=True)"
+          if ($LASTEXITCODE -ne 0) { throw 'pywebview distribution metadata check failed' }
 
       - name: Headless application self-test
         timeout-minutes: 2

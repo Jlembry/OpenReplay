@@ -7,7 +7,5 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": {
-    "demoparser2": "0.42.0"
-  }
+  "dependencies": {}
 }

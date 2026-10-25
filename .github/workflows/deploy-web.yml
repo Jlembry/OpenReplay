@@ -3,13 +3,15 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: "Deploy candidate to GitHub Pages (only after checking real demos)"
+        description: "Deploy candidate to GitHub Pages (ONLY after real demo parity testing)"
         required: true
         default: false
         type: boolean
   push:
     branches: [main]
-    paths: ['web/**','.github/workflows/deploy-web.yml']
+    paths:
+      - 'web/**'
+      - '.github/workflows/deploy-web.yml'
 permissions:
   contents: read
   pages: write
@@ -26,13 +28,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install pinned parser dependency
-        working-directory: web
-        run: npm install --no-audit --no-fund
-      - name: Run adapter tests
+      - name: Fetch official browser WebAssembly build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Python and native Node 0.42.0 packages CANNOT run on GitHub Pages.
+          # This is the author's separate browser WASM example, not an npm dependency.
+          git clone --depth 1 https://github.com/LaihoE/demoparser-wasm-demo.git "$RUNNER_TEMP/openreplay-upstream-wasm"
+          test -s "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2.js"
+          test -s "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2_bg.wasm"
+          mkdir -p web/vendor
+          cp "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2.js" web/vendor/
+          cp "$RUNNER_TEMP/openreplay-upstream-wasm/pkg/demoparser2_bg.wasm" web/vendor/
+          git -C "$RUNNER_TEMP/openreplay-upstream-wasm" rev-parse HEAD > web/vendor/UPSTREAM_COMMIT.txt
+          curl --fail --location --silent --show-error https://raw.githubusercontent.com/LaihoE/demoparser/main/LICENSE -o web/vendor/LICENSE-demoparser.txt
+          echo "Upstream commit: $(cat web/vendor/UPSTREAM_COMMIT.txt)"
+          sha256sum web/vendor/demoparser2.js web/vendor/demoparser2_bg.wasm
+      - name: Run adapter unit tests
         working-directory: web
         run: npm test
-      - name: Build static WASM site
+      - name: Build browser-only candidate
         working-directory: web
         run: npm run build
       - name: Upload candidate to workflow artifacts
@@ -52,8 +67,9 @@ jobs:
     needs: build
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - id: deploy
+      - name: Deploy
+        id: deployment
         uses: actions/deploy-pages@v4

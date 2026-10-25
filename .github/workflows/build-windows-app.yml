@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "v1.0.0-beta.2"
+        description: "Beta version label (example: v1.0.0-beta.2)"
         required: true
         default: "v1.0.0-beta.2"
       publish_release:
@@ -46,29 +46,49 @@ jobs:
           python -m pip install --only-binary=:all: -r desktop-requirements.txt
           python -m pip check
 
+      # Deliberately separate checks. The previous combined step went silent for
+      # 44 minutes, making it impossible to tell compilation from GUI import hangs.
       - name: Validate Python syntax
+        timeout-minutes: 2
         run: |
+          Write-Host 'Compiling Python modules...'
           python -m py_compile desktop.py server.py worker.py security.py parser.py
-          python desktop.py --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Python source compilation failed' }
+          Write-Host 'Python syntax OK.'
+
+      - name: Headless application self-test
+        timeout-minutes: 3
+        run: |
+          Write-Host 'Checking application imports and static assets (no GUI)...'
+          python ci/run_checked.py --timeout 90 -- python -u desktop.py --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Headless application self-test failed or timed out' }
+          Write-Host 'Application self-test OK.'
 
       - name: Build the portable app
+        timeout-minutes: 25
         run: |
+          Write-Host 'Building PyInstaller portable app...'
           python -m PyInstaller --clean --noconfirm OpenReplay.spec
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
+          Write-Host 'PyInstaller build complete.'
 
       - name: Smoke-test bundled executable
+        timeout-minutes: 3
         run: |
-          & .\dist\OpenReplay\OpenReplay.exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "The packaged EXE failed its self-test" }
+          Write-Host 'Checking frozen executable and bundled static assets...'
+          python ci/run_checked.py --timeout 90 -- .\dist\OpenReplay\OpenReplay.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged EXE failed its self-test or timed out' }
 
       - name: Check bundled parser child and original demo cleanup
+        timeout-minutes: 3
         run: |
           $testDir = Join-Path $env:RUNNER_TEMP 'openreplay-parser-child'
           New-Item -ItemType Directory -Force -Path $testDir | Out-Null
           [IO.File]::WriteAllBytes((Join-Path $testDir 'demo.dem'),[Text.Encoding]::ASCII.GetBytes('PBDEMS2bad'))
           '{"id":"test","status":"parsing","filename":"bad.dem"}' | Set-Content -Path (Join-Path $testDir 'status.json') -Encoding utf8
           # worker should reject malformed input and delete the original.
-          & .\dist\OpenReplay\OpenReplay.exe --worker-single $testDir
-          if ($LASTEXITCODE -ne 0) { throw "Bundled worker failed to launch" }
+          python ci/run_checked.py --timeout 90 -- .\dist\OpenReplay\OpenReplay.exe --worker-single $testDir
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled worker failed or timed out' }
           if (Test-Path (Join-Path $testDir 'demo.dem')) { throw "Worker did not clean up input" }
           $status = Get-Content (Join-Path $testDir 'status.json') -Raw | ConvertFrom-Json
           if ($status.status -ne 'error') { throw "Expected an error for malformed test input" }

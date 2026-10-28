@@ -50,6 +50,23 @@ jobs:
           # DO NOT use demoparser-wasm-demo/pkg here: its old binary cannot
           # necessarily decode modern Source 2 entity streams.
           git clone --depth 1 https://github.com/LaihoE/demoparser.git "$RUNNER_TEMP/openreplay-parser-source"
+          # TEMPORARY: expose the original Rust panic to the browser console.
+          # This adds only diagnostics; it does NOT change demo parsing logic.
+          cat >> "$RUNNER_TEMP/openreplay-parser-source/src/wasm/src/lib.rs" <<'OPENREPLAY_RUST'
+          
+          #[wasm_bindgen::prelude::wasm_bindgen]
+          extern "C" {
+              #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
+              fn openreplay_wasm_panic_console_error(message: &str);
+          }
+          
+          #[wasm_bindgen::prelude::wasm_bindgen(js_name = installOpenReplayPanicHook)]
+          pub fn openreplay_install_panic_hook() {
+              std::panic::set_hook(Box::new(|info| {
+                  openreplay_wasm_panic_console_error(&format!("[OpenReplay Rust panic] {info}"));
+              }));
+          }
+          OPENREPLAY_RUST
           mkdir -p web/vendor
           (
             cd "$RUNNER_TEMP/openreplay-parser-source/src/wasm"
@@ -59,6 +76,7 @@ jobs:
           )
           test -s web/vendor/demoparser2.js
           test -s web/vendor/demoparser2_bg.wasm
+          grep -q 'installOpenReplayPanicHook' web/vendor/demoparser2.js
           git -C "$RUNNER_TEMP/openreplay-parser-source" rev-parse HEAD > web/vendor/UPSTREAM_COMMIT.txt
           cp "$RUNNER_TEMP/openreplay-parser-source/LICENSE" web/vendor/LICENSE-demoparser.txt
           echo "Compiled parser commit: $(cat web/vendor/UPSTREAM_COMMIT.txt)"

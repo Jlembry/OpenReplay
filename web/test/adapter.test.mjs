@@ -109,19 +109,31 @@ test('numeric columns in Map form are decoded into rows',()=>{
 });
 
 
-test('bulk parseEvents round events avoid redundant full-file reads',()=>{
- const requests=[];
+test('diagnostic bypasses bulk calls and tries zero-extra round events first',()=>{
+ const calls=[];
  const mock={parseHeader:()=>({map_name:'de_mirage'}),
-   parseEvents:(_f,names)=>{
-     requests.push('batch');
-     assert.ok(names.includes('round_start'));
-     return new Map([['round_start',[{tick:100}]],['round_end',[{tick:400,winner:3,reason:8}]]]);
+   parseEvents:()=>{throw Error('bulk parser should be disabled in this diagnostic');},
+   parseEvent:(_f,name,...params)=>{
+     if(['round_start','round_end'].includes(name)) calls.push([name,params.length]);
+     return name==='round_start'?[{tick:100}]:name==='round_end'?[{tick:400,winner:3,reason:8}]:[];
    },
-   parseEvent:(_f,name)=>{
-     if(['round_start','round_end'].includes(name))throw Error('round event should come from batch');
+   parseTicks:()=>[{tick:100,steamid:'1',name:'Alpha',X:11,Y:22,team_num:3,health:100}],parseGrenades:()=>[]};
+ const result=parse(new Uint8Array([1]),'game.dem',mock,()=>{});
+ assert.equal(result.rounds.length,1);
+ assert.ok(calls.some(([name,num])=>name==='round_start' && num===0));
+ assert.ok(calls.some(([name,num])=>name==='round_end' && num===0));
+});
+
+test('diagnostic can recover when optional round-event properties would panic',()=>{
+ const mock={parseHeader:()=>({map_name:'de_mirage'}),
+   parseEvents:()=>{throw Error('unreachable');},
+   parseEvent:(_f,name,...params)=>{
+     if(params.length)throw Error('unreachable');
+     if(name==='round_start')return [{tick:100}];
+     if(name==='round_end')return [{tick:400,winner:3,reason:8}];
      return [];
    },
    parseTicks:()=>[{tick:100,steamid:'1',name:'Alpha',X:11,Y:22,team_num:3,health:100}],parseGrenades:()=>[]};
- const got=parse(new Uint8Array([1]),'game.dem',mock,()=>{});
- assert.equal(got.rounds.length,1);assert.deepEqual(requests,['batch']);
+ const result=parse(new Uint8Array([1]),'game.dem',mock,()=>{});
+ assert.equal(result.rounds.length,1);
 });

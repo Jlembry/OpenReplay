@@ -13,6 +13,11 @@ onmessage=async ({data})=>{
   try{
     postMessage({type:'progress',text:'Initializing Counter-Strike parser…'});
     await initWasm();
+    // Diagnostic build: expose Rust panic location/message, not demo contents.
+    if (typeof wasm_bindgen.installOpenReplayPanicHook !== 'function') {
+      throw new Error('Diagnostic WASM hook is missing from the generated parser build.');
+    }
+    wasm_bindgen.installOpenReplayPanicHook();
     const file=new Uint8Array(data.bytes);
     postMessage({type:'progress',text:'Decoding match events and positions…'});
     // Raw recording is never transmitted: all extraction occurs inside this worker.

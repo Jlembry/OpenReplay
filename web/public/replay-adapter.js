@@ -101,7 +101,11 @@ function parse(file,filename,wasm,progress){
  // reparsing the complete (potentially hundreds-of-MB) demo for each event.
  // Fall back to individual calls for older bindings or unsupported bulk APIs.
  const roundNames=['round_start','round_end','round_freeze_end','round_officially_ended','round_announce_match_start','round_prestart'];
- if(typeof wasm.parseEvents==='function'){
+ // Diagnostic only: bypass the bulk parser call to distinguish a batch-specific
+ // WASM trap from one caused by decoding any individual round event.
+ // This makes uploads slower; DO NOT leave enabled in production builds.
+ const DIAGNOSTIC_INDIVIDUAL_ROUNDS = true;
+ if(!DIAGNOSTIC_INDIVIDUAL_ROUNDS && typeof wasm.parseEvents==='function'){
    try{
      const batch=plain(wasm.parseEvents(file,roundNames,[],[]));
      for(const name of roundNames){
@@ -117,12 +121,16 @@ function parse(file,filename,wasm,progress){
    let rows=[],failures=[];
    const attempts=extra?
      [()=>wasm.parseEvent(file,name,['X','Y','Z','flash_duration']),()=>wasm.parseEvent(file,name)]:
-     [()=>wasm.parseEvent(file,name,[],['is_warmup_period','total_rounds_played']),()=>wasm.parseEvent(file,name)];
+     [()=>wasm.parseEvent(file,name),()=>wasm.parseEvent(file,name,[],['is_warmup_period','total_rounds_played'])];
    for(const attempt of attempts){
      try{rows=normalizedRows(attempt(),name);if(rows.length)break;}
      catch(e){failures.push(String(e?.message||e||'unknown parsing error').slice(0,160));}
    }
-   if(failures.length)eventFailures.set(name,failures);
+   if(failures.length){
+     eventFailures.set(name,failures);
+     if(/round|freeze|match/.test(name) && typeof console!=='undefined')
+       console.warn('[OpenReplay WASM diagnostic]', name, failures.join(' | '));
+   }
    eventsByType.set(key,rows);return rows;
  };
  const starts=event('round_start'),roundEnds=event('round_end'),freeze=event('round_freeze_end');

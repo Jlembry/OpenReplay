@@ -4,10 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: "Deploy to GitHub Pages (ONLY after real .dem verification)"
+        description: "Deploy to GitHub Pages (first verify real .dem locally)"
         required: true
         type: boolean
         default: false
+  schedule:
+    # Daily (UTC): pick up map changes without committing images to Git.
+    - cron: '27 9 * * *'
   push:
     branches: [main]
     paths:
@@ -125,6 +128,17 @@ jobs:
       - name: Build browser-only candidate
         working-directory: web
         run: npm run build
+      - name: Download and validate current CS2 radar maps
+        # Maps are created ONLY in web/dist/maps; they never go into the Git repo.
+        run: python3 web/scripts/sync_maps.py --output web/dist/maps
+      - name: Check core radar assets before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          for map in de_anubis de_mirage de_nuke; do
+            test -s "web/dist/maps/$map.json"
+            test -s "web/dist/maps/$map.png"
+          done
       - name: Upload test candidate
         uses: actions/upload-artifact@v4
         with:
@@ -132,16 +146,16 @@ jobs:
           path: web/dist
           retention-days: 7
       - name: Configure GitHub Pages (explicit opt-in only)
-        if: ${{ inputs.deploy == true }}
+        if: ${{ github.event_name == 'schedule' || inputs.deploy == true }}
         uses: actions/configure-pages@v5
       - name: Upload GitHub Pages artifact (explicit opt-in only)
-        if: ${{ inputs.deploy == true }}
+        if: ${{ github.event_name == 'schedule' || inputs.deploy == true }}
         uses: actions/upload-pages-artifact@v4
         with:
           path: web/dist
 
   deploy:
-    if: ${{ inputs.deploy == true }}
+    if: ${{ github.event_name == 'schedule' || inputs.deploy == true }}
     needs: build
     runs-on: ubuntu-latest
     environment:

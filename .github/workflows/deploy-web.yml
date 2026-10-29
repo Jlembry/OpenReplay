@@ -67,6 +67,40 @@ jobs:
               }));
           }
           OPENREPLAY_RUST
+          # Upstream currently calls Rust std::time::Instant::now() during parsing.
+          # That traps on wasm32-unknown-unknown. Use web-time, whose browser
+          # implementation uses performance.now(). Keep all other parser behavior.
+          python3 - <<'OPENREPLAY_CLOCK_FIX'
+          from pathlib import Path
+          import os
+          root = Path(os.environ['RUNNER_TEMP']) / 'openreplay-parser-source' / 'src' / 'parser'
+          manifest = root / 'Cargo.toml'
+          s = manifest.read_text()
+          if '[dependencies]' not in s:
+              raise SystemExit('Unexpected upstream parser Cargo.toml: missing [dependencies]')
+          if 'web-time' not in s:
+              s = s.replace('[dependencies]', '[dependencies]\nweb-time = "=1.1.0"', 1)
+              manifest.write_text(s)
+          changed = []
+          instant_total = 0
+          system_total = 0
+          for path in (root / 'src').rglob('*.rs'):
+              before = path.read_text()
+              ni = before.count('std::time::Instant')
+              ns = before.count('std::time::SystemTime')
+              if ni or ns:
+                  after = before.replace('std::time::Instant', 'web_time::Instant')
+                  after = after.replace('std::time::SystemTime', 'web_time::SystemTime')
+                  path.write_text(after)
+                  instant_total += ni
+                  system_total += ns
+                  changed.append(f'{path.relative_to(root)}: Instant={ni}, SystemTime={ns}')
+          if instant_total < 2:
+              raise SystemExit('Upstream changed: fewer than two fully qualified Rust Instant references. Review patch before deploying.')
+          print('[OpenReplay] Patched WASM clock usages:')
+          print('\n'.join(changed))
+          print(f'[OpenReplay] Total Instant={instant_total}, SystemTime={system_total}')
+          OPENREPLAY_CLOCK_FIX
           mkdir -p web/vendor
           (
             cd "$RUNNER_TEMP/openreplay-parser-source/src/wasm"

@@ -105,3 +105,32 @@ def test_worker_success_and_error_handling(tmp_path,monkeypatch):
     state=json.loads((folder/'status.json').read_text())
     assert state['status']=='error' and 'secret' not in state['error']
     assert not src.exists()
+
+
+
+def test_local_port_scoped_cookies_prevent_multi_instance_collision(monkeypatch):
+    import security
+    secret_a = b'a' * 32
+    secret_b = b'b' * 32
+    with TestClient(server.application, base_url='http://127.0.0.1:8765') as c8765, \
+         TestClient(server.application, base_url='http://127.0.0.1:8766') as c8766:
+        monkeypatch.setattr(security, 'SECRET', secret_a)
+        r1 = c8765.get('/')
+        assert 'openreplay_session_8765=' in r1.headers['set-cookie']
+        assert c8765.get('/api/session').status_code == 200
+
+        # Simulate a shared browser cookie jar across ports on 127.0.0.1
+        # when a second local instance starts on 8766 with its own SECRET.
+        for k, v in c8765.cookies.items():
+            c8766.cookies.set(k, v)
+        monkeypatch.setattr(security, 'SECRET', secret_b)
+        r2 = c8766.get('/')
+        assert 'openreplay_session_8766=' in r2.headers['set-cookie']
+        assert c8766.get('/api/session').status_code == 200
+
+        # Propagate 8766's cookies back into the shared browser cookie jar:
+        # 8765's session must remain valid under secret_a.
+        for k, v in c8766.cookies.items():
+            c8765.cookies.set(k, v)
+        monkeypatch.setattr(security, 'SECRET', secret_a)
+        assert c8765.get('/api/session').status_code == 200

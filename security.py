@@ -64,12 +64,21 @@ def browser_allowed(request: Request) -> bool:
     site=request.headers.get('sec-fetch-site','')
     return site in {'','none','same-origin'}
 
+def cookie_name(request: Request | None = None) -> str:
+    # HTTP cookies are not port-scoped (RFC 6265). Suffix the port in local mode
+    # so multiple local instances on 8765..8790 do not overwrite each other's session.
+    if MODE == 'local' and request is not None:
+        _, sep, port = request.headers.get('host', '').lower().rstrip('.').partition(':')
+        if sep and port.isdecimal() and 8765 <= int(port) <= 8790:
+            return f'{COOKIE}_{port}'
+    return COOKIE
+
 def require_session(request: Request, mutate: bool=False) -> str:
-    sid=session_id(request.cookies.get(COOKIE))
+    sid=session_id(request.cookies.get(cookie_name(request)))
     if not sid: raise HTTPException(401,'Reload OpenReplay to initialize a private session')
     if mutate and not hmac.compare_digest(request.headers.get('x-openreplay-csrf',''), csrf_value(sid)):
         raise HTTPException(403,'Invalid request token')
     return sid
 
-def set_cookie(response, cookie: str):
-    response.set_cookie(COOKIE,cookie,max_age=SESSION_SECONDS,httponly=True,secure=MODE=='web',samesite='strict',path='/')
+def set_cookie(response, cookie: str, request: Request | None = None):
+    response.set_cookie(cookie_name(request),cookie,max_age=SESSION_SECONDS,httponly=True,secure=MODE=='web',samesite='strict',path='/')

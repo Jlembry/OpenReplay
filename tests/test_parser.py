@@ -70,3 +70,71 @@ def test_invalid_missing_rounds(tmp_path):
     with patch.dict(sys.modules,{'demoparser2':types.SimpleNamespace(DemoParser=BadParser)}):
         with pytest.raises(ValueError,match='No match rounds'):
             extract_demo(tmp_path/'bad.dem','bad.dem')
+
+
+def test_cs2_faceit_knife_warmup_and_string_reasons():
+    starts = [
+        {'tick': 1, 'round': 1, 'is_warmup_period': False, 'total_rounds_played': 0},
+        {'tick': 2812, 'round': 1, 'is_warmup_period': True, 'total_rounds_played': 0},
+        {'tick': 3295, 'round': 1, 'is_warmup_period': False, 'total_rounds_played': 0},
+        {'tick': 3370, 'round': 1, 'is_warmup_period': False, 'total_rounds_played': 0},
+        {'tick': 6922, 'round': 2, 'is_warmup_period': False, 'total_rounds_played': 1},
+    ]
+    ends = [
+        {'tick': 1, 'round': 0, 'winner': None, 'reason': None, 'is_warmup_period': False},
+        {'tick': 2663, 'round': 1, 'winner': 'T', 'reason': 'ct_killed', 'is_warmup_period': False},
+        {'tick': 6474, 'round': 2, 'winner': 'CT', 'reason': 't_killed', 'is_warmup_period': False},
+        {'tick': 14454, 'round': 3, 'winner': 'CT', 'reason': 'bomb_defused', 'is_warmup_period': False},
+    ]
+    match_starts = [{'tick': 1280}, {'tick': 5066}]
+    freeze_ends = [
+        {'tick': 1280, 'is_warmup_period': False},
+        {'tick': 2939, 'is_warmup_period': True},
+        {'tick': 5066, 'is_warmup_period': False},
+        {'tick': 9461, 'is_warmup_period': False},
+    ]
+    r = build_rounds(starts, ends, match_starts, freeze_ends)
+    assert len(r) == 2
+    assert r[0]['start'] == 3370 and r[0]['freeze'] == 5066 and r[0]['end'] == 6474
+    assert r[0]['winner'] == 'CT' and r[0]['win_type'] == 'elimination'
+    assert r[1]['start'] == 6922 and r[1]['freeze'] == 9461 and r[1]['end'] == 14454
+    assert r[1]['winner'] == 'CT' and r[1]['win_type'] == 'defuse'
+
+
+def test_panic_base_exception_and_tick_round_recovery(tmp_path):
+    class SimPanic(BaseException):
+        pass
+
+    class PanicEventParser:
+        def __init__(self, path):
+            pass
+        def parse_header(self):
+            return {'map_name': 'de_dust2'}
+        def parse_event(self, *args, **kwargs):
+            raise SimPanic('rust panic in event stream')
+        def parse_ticks(self, props, ticks=None):
+            if ticks is None:
+                return pd.DataFrame([
+                    {'tick': 100, 'is_warmup_period': True, 'total_rounds_played': 0},
+                    {'tick': 500, 'is_warmup_period': False, 'total_rounds_played': 0},
+                    {'tick': 1100, 'is_warmup_period': False, 'total_rounds_played': 0},
+                    {'tick': 1200, 'is_warmup_period': False, 'total_rounds_played': 1},
+                    {'tick': 1800, 'is_warmup_period': False, 'total_rounds_played': 1},
+                ])
+            rows = []
+            for tick in ticks:
+                for pid in range(2):
+                    rows.append({
+                        'tick': tick, 'X': 10.0 + pid * 50, 'Y': 20.0 + pid * 50, 'Z': 0.0,
+                        'health': 100, 'is_alive': True, 'player_color': pid,
+                        'team_num': 2 + pid, 'steamid': 76561190000000010 + pid,
+                        'name': ['p1', 'p2'][pid],
+                    })
+            return pd.DataFrame(rows)
+
+    with patch.dict(sys.modules, {'demoparser2': types.SimpleNamespace(DemoParser=PanicEventParser)}):
+        demo = extract_demo(tmp_path / 'panic.dem', 'panic.dem')
+    assert demo['map'] == 'de_dust2'
+    assert len(demo['rounds']) == 2
+    assert demo['rounds'][0]['start'] == 500
+    assert demo['rounds'][1]['start'] == 1200

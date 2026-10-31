@@ -52,7 +52,7 @@ The local version uses a Python service to parse the demo on your own machine, t
 
 1. **Download** the latest **Local** release from this project's [GitHub Releases](../../releases) page, or download the repository as a ZIP.
 2. **Extract** the archive to a normal folder, such as `Desktop\OpenReplay`. Do not run it from inside the ZIP file.
-3. Install **Python 3.11 or newer** if it is not already installed. Ensure that `python` or the Windows `py` launcher is available.
+3. Install **64-bit Python 3.11, 3.12, or 3.13** (`3.13` recommended; Python `3.14+` is not yet supported by the pinned binary packages) if it is not already installed. Ensure that `python` or the Windows `py` launcher is available.
 4. Inside the extracted `OpenReplay` folder, double-click **`start_windows.bat`**.
 5. On first launch, OpenReplay creates a local `.venv` and installs its Python dependencies. This requires an internet connection. Later launches reuse that environment unless the requirements change.
 6. Your browser should open automatically. If it does not, copy the exact URL shown in the terminal; for example, **`http://127.0.0.1:8765`**.
@@ -67,7 +67,7 @@ The local version uses a Python service to parse the demo on your own machine, t
 | Item | Details |
 | --- | --- |
 | Operating system | **Windows** has the included one-click launcher. Other systems may run from source with Python, but the Windows experience is the packaged path. |
-| Python | **3.11+** with support for virtual environments. |
+| Python | **64-bit CPython 3.11–3.13** (`3.13` recommended) with support for virtual environments. |
 | Browser | A modern desktop browser with JavaScript, Canvas, and local file selection. |
 | Recording | A **Counter-Strike 2 Source 2 `.dem`** file. Legacy CS:GO demos are not promised to work. |
 | Demo size | The local server's default maximum upload size is **900 MB**; this is configurable by the operator. |
@@ -471,7 +471,7 @@ Open the local URL printed in the terminal, such as `http://127.0.0.1:8765`. It 
 <details>
 <summary><strong>Python or dependency installation fails.</strong></summary>
 
-Check that Python **3.11+** is installed, virtual environments are available, and your internet connection permits package downloads. Read the error in the terminal instead of closing it immediately. If a pinned dependency is unavailable for your Python version or platform, please report your Python version and the exact error **without uploading private recordings**.
+Check that **64-bit Python 3.11, 3.12, or 3.13** is installed (Python 3.14+ and 32-bit builds cannot install every pinned wheel in this release), virtual environments are available, and your internet connection permits package downloads. Read the error in the terminal instead of closing it immediately. If a pinned dependency is unavailable for your Python version or platform, please report your Python version and the exact error **without uploading private recordings**.
 
 </details>
 
@@ -537,7 +537,7 @@ OpenReplay/
 └── ...
 ```
 
-On Windows, **`start_windows.bat` is the preferred setup**. For a manual local development environment on Windows, macOS, or Linux, install Python 3.11+ and use:
+On Windows, **`start_windows.bat` is the preferred setup**. For a manual local development environment on Windows, macOS, or Linux, install **64-bit Python 3.11–3.13** (for example, `py -3.13` on Windows) and use:
 
 ```bash
 python -m venv .venv

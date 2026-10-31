@@ -10,7 +10,7 @@ from urllib.request import HTTPRedirectHandler, Request as URLRequest, build_ope
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from security import (MODE, WEB_HOST, COOKIE, browser_allowed, csrf_value, new_session,
+from security import (MODE, WEB_HOST, COOKIE, browser_allowed, cookie_name, csrf_value, new_session,
                       owner_hash, require_session, same_origin, session_id, set_cookie, valid_host)
 
 BASE=Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))  # PyInstaller asset location
@@ -22,7 +22,7 @@ PARSE_TIMEOUT=int(os.getenv('OPENREPLAY_PARSE_TIMEOUT','240'))
 DATA_ROOT=Path(os.getenv('OPENREPLAY_DATA_DIR','')) if os.getenv('OPENREPLAY_DATA_DIR') else Path(tempfile.mkdtemp(prefix='openreplay-'))
 DATA_ROOT.mkdir(parents=True,exist_ok=True,mode=0o700)
 if MODE=='local':atexit.register(lambda:shutil.rmtree(DATA_ROOT,ignore_errors=True))
-MAP_DIR=Path(tempfile.gettempdir())/'openreplay-radars' if MODE=='web' else DATA_ROOT/'radars'
+MAP_DIR=Path(tempfile.gettempdir())/'openreplay-radars'
 MAP_DIR.mkdir(parents=True,exist_ok=True,mode=0o700)
 REMOTE_MANIFEST='https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/data/available.json'
 REMOTE_BASE='https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/radars/'
@@ -198,7 +198,7 @@ def map_info(map_name:str)->dict:
 @app.get('/')
 def index(request:Request):
     response=FileResponse(STATIC/'index.html')
-    if not session_id(request.cookies.get(COOKIE)):set_cookie(response,new_session())
+    if not session_id(request.cookies.get(cookie_name(request))):set_cookie(response,new_session(),request)
     return response
 
 @app.get('/api/session')
@@ -328,19 +328,49 @@ def choose_local_port(start=8765,limit=8790):
     import socket
     for port in range(start,limit+1):
         with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as sock:
+            if hasattr(socket,'SO_EXCLUSIVEADDRUSE'):
+                try:sock.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
+                except OSError:pass
             try:sock.bind(('127.0.0.1',port))
             except OSError:continue
             return port
     raise RuntimeError('No available local port')
 
+def _open_when_ready(host:str,port:int,url:str,timeout:float=20.0):
+    import socket,webbrowser
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.25)
+            if sock.connect_ex((host,port))==0:
+                webbrowser.open(url)
+                return
+        time.sleep(0.1)
+
+_win_ctrl_handler=None
+def _register_windows_cleanup():
+    global _win_ctrl_handler
+    if sys.platform!='win32' or MODE!='local' or _win_ctrl_handler is not None:return
+    try:
+        import ctypes
+        @ctypes.WINFUNCTYPE(ctypes.c_int,ctypes.c_uint)
+        def handler(ctrl_type):
+            if ctrl_type in (2,5,6):shutil.rmtree(DATA_ROOT,ignore_errors=True)
+            return 0
+        if ctypes.windll.kernel32.SetConsoleCtrlHandler(handler,1):
+            _win_ctrl_handler=handler
+    except Exception:
+        pass
+
 # Browser requests are streamed, including chunked uploads with no Content-Length.
 application=BodyLimit(app,BODY_LIMIT)
 
 if __name__=='__main__':
-    import uvicorn,webbrowser
+    import uvicorn
     if MODE!='local':raise SystemExit('Use Docker Compose for the web version')
+    _register_windows_cleanup()
     port=choose_local_port()
     url=f'http://127.0.0.1:{port}'
     print(f'\n  OpenReplay Local Secure -> {url}\n')
-    threading.Timer(1.5,lambda:webbrowser.open(url)).start()
+    threading.Thread(target=_open_when_ready,args=('127.0.0.1',port,url),name='openreplay-browser',daemon=True).start()
     uvicorn.run(application,host='127.0.0.1',port=port,access_log=False,server_header=False)

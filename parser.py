@@ -1,7 +1,10 @@
 """Parse Counter-Strike 2 demo positions, kills, stats and grenade events for OpenReplay."""
 from __future__ import annotations
 
+import ctypes
 import math
+import os
+import struct
 from bisect import bisect_right
 from collections import defaultdict
 from pathlib import Path
@@ -46,19 +49,161 @@ def _records(df):
                   key=lambda r:int(r['tick']))
 
 
+ROUND_EVENTS = (
+    'round_start', 'round_end', 'round_announce_match_start',
+    'round_freeze_end', 'round_prestart', 'round_officially_ended',
+)
+
+_DEMOPARSER_PATCHED = False
+_EVENT_CACHE: dict[int, dict[tuple[str, bool], list]] = {}
+
+
+def _is_fatal_exception(exc: BaseException) -> bool:
+    return isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+
+
+def _patch_demoparser2_malformed_event() -> None:
+    """Make demoparser2 skip individual CSVCMsg_GameEvent packets with non-UTF-8 strings.
+
+    Some CS2 demos (notably FACEIT recordings) include a `player_connect` legacy
+    game event whose `address` string field contains raw binary bytes. Because
+    `demoparser2` decodes every `GE_Source1LegacyGameEvent` protobuf before
+    checking whether the event ID was requested, a single non-UTF-8 string causes
+    `SecondPassParser::parse_game_event` to abort the entire pass with
+    `DemoParserError::MalformedMessage`. Flipping the error discriminant in that
+    branch from `-2` (`Err`) to `-1` (`Ok(())`) still frees the `DecodeError`
+    allocation and cleanly ignores only the unreadable event.
+    """
+    global _DEMOPARSER_PATCHED
+    if _DEMOPARSER_PATCHED:
+        return
+    _DEMOPARSER_PATCHED = True
+    if os.name != 'nt':
+        return
+    try:
+        import demoparser2
+        ext_mod = getattr(demoparser2, 'demoparser2', None)
+        pyd_path = getattr(ext_mod, '__file__', None)
+        if not pyd_path or not os.path.isfile(pyd_path):
+            return
+        with open(pyd_path, 'rb') as f:
+            binary = f.read()
+        # Unique x86_64 sequence in SecondPassParser::parse_game_event:
+        #   41 c7 47 08 08 00 00 00  mov dword ptr [r15+8], 8  (MalformedMessage)
+        #   49 c7 07 fe ff ff ff     mov qword ptr [r15], -2   (Result::Err)
+        #   48 8b 7d 68              mov rdi, qword ptr [rbp+0x68]
+        unpatched = bytes.fromhex('41 c7 47 08 08 00 00 00 49 c7 07 fe ff ff ff 48 8b 7d 68')
+        patched = bytes.fromhex('41 c7 47 08 08 00 00 00 49 c7 07 ff ff ff ff 48 8b 7d 68')
+        file_offset = binary.find(unpatched)
+        if file_offset == -1 or binary.find(unpatched, file_offset + 1) != -1:
+            return
+        if binary[:2] != b'MZ':
+            return
+        pe_offset = struct.unpack_from('<I', binary, 0x3C)[0]
+        if binary[pe_offset:pe_offset + 4] != b'PE\x00\x00':
+            return
+        num_sections = struct.unpack_from('<H', binary, pe_offset + 6)[0]
+        opt_header_size = struct.unpack_from('<H', binary, pe_offset + 20)[0]
+        sec_table = pe_offset + 24 + opt_header_size
+        target_rva = None
+        for i in range(num_sections):
+            sec = sec_table + i * 40
+            vsize, vaddr, raw_size, raw_ptr = struct.unpack_from('<IIII', binary, sec + 8)
+            span = max(vsize, raw_size)
+            if raw_ptr <= file_offset < raw_ptr + span:
+                target_rva = file_offset - raw_ptr + vaddr
+                break
+        if target_rva is None:
+            return
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        kernel32.VirtualProtect.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)
+        ]
+        kernel32.VirtualProtect.restype = ctypes.c_int
+        base = kernel32.GetModuleHandleW(pyd_path)
+        if not base:
+            return
+        addr = base + target_rva
+        buf = (ctypes.c_ubyte * len(unpatched)).from_address(addr)
+        current = bytes(buf)
+        if current == patched:
+            return
+        if current != unpatched:
+            return
+        old_prot = ctypes.c_uint32()
+        if kernel32.VirtualProtect(addr, len(unpatched), 0x40, ctypes.byref(old_prot)):
+            try:
+                buf[11] = 0xFF
+            finally:
+                kernel32.VirtualProtect(addr, len(unpatched), old_prot.value, ctypes.byref(old_prot))
+    except BaseException as exc:
+        if _is_fatal_exception(exc):
+            raise
+
+
+def _prefetch_events(parser, event_names, with_positions=False):
+    """Batch-parse events in a single pass when supported by the parser backend."""
+    _patch_demoparser2_malformed_event()
+    parse_events_fn = getattr(parser, 'parse_events', None)
+    if not callable(parse_events_fn):
+        return
+    cache = _EVENT_CACHE.setdefault(id(parser), {})
+    missing = [name for name in event_names if (name, bool(with_positions)) not in cache]
+    if not missing:
+        return
+    attempts = (
+        [{'player': ['X', 'Y', 'Z', 'flash_duration']}, {'player': ['X', 'Y', 'Z']}, {}]
+        if with_positions
+        else [{'other': ['is_warmup_period', 'total_rounds_played']}, {}]
+    )
+    for kwargs in attempts:
+        try:
+            pairs = parse_events_fn(missing, **kwargs)
+            if not isinstance(pairs, list):
+                continue
+            found = {}
+            for item in pairs:
+                if isinstance(item, (tuple, list)) and len(item) == 2:
+                    ev_name, df = item
+                    found[str(ev_name)] = _records(df)
+            for name in missing:
+                cache[(name, bool(with_positions))] = found.get(name, [])
+            return
+        except BaseException as exc:
+            if _is_fatal_exception(exc):
+                raise
+            continue
+
+
 def _events(parser, event, with_positions=False):
     """Optional event support must never prevent a replay from loading."""
+    _patch_demoparser2_malformed_event()
+    cache = _EVENT_CACHE.get(id(parser))
+    key = (event, bool(with_positions))
+    if isinstance(cache, dict) and key in cache:
+        return cache[key]
     try:
         if with_positions:
-            try:
-                return _records(parser.parse_event(event,player=['X','Y','Z','flash_duration']))
-            except Exception:
+            for player_props in (['X','Y','Z','flash_duration'], ['X','Y','Z']):
                 try:
-                    return _records(parser.parse_event(event,player=['X','Y','Z']))
-                except Exception:
-                    pass
+                    return _records(parser.parse_event(event,player=player_props))
+                except BaseException as exc:
+                    if _is_fatal_exception(exc):
+                        raise
+        elif event in ROUND_EVENTS:
+            try:
+                rows = _records(parser.parse_event(event,other=['is_warmup_period','total_rounds_played']))
+                if rows:
+                    return rows
+            except BaseException as exc:
+                if _is_fatal_exception(exc):
+                    raise
         return _records(parser.parse_event(event))
-    except Exception:
+    except BaseException as exc:
+        if _is_fatal_exception(exc):
+            raise
         return []
 
 
@@ -516,7 +661,9 @@ def parse_trajectory(parser, utility, player_index, start_tick, end_tick, player
                 trajectories.append({'type':kind,'start':sampled[0][0],'end':sampled[-1][0],
                                      'owner':owner,'entity':entity,'points':sampled,'estimated':False})
         return trajectories[:1000]
-    except Exception:
+    except BaseException as exc:
+        if _is_fatal_exception(exc):
+            raise
         return []
 
 def enrich_utility_with_trajectories(utilities, trajectories, rounds):
@@ -743,20 +890,67 @@ def associate_utility_impacts(utilities, hurts, blinds, player_index, rounds, tr
 
 def build_rounds(starts: list, ends: list, match_starts: list, freeze_ends: list):
     """Pair starts to next start; include end-of-round intermission for scrubbing."""
+    non_warmup_starts = [r for r in starts if not _first_flag(r, 'is_warmup_period', 'is_warmup')]
+    if non_warmup_starts:
+        starts = non_warmup_starts
+    non_warmup_ends = [r for r in ends if not _first_flag(r, 'is_warmup_period', 'is_warmup')]
+    if non_warmup_ends:
+        ends = non_warmup_ends
+    non_warmup_freeze = [r for r in freeze_ends if not _first_flag(r, 'is_warmup_period', 'is_warmup')]
+    if non_warmup_freeze:
+        freeze_ends = non_warmup_freeze
+
     start_rows = {_integer(r['tick']): r for r in starts if _integer(r.get('tick')) is not None}
     starts = sorted(start_rows)
+    ends = [
+        r for r in ends
+        if _integer(r.get('tick')) is not None
+        and not (_integer(r.get('round')) == 0 and not r.get('winner') and not r.get('reason') and not r.get('message'))
+    ]
     ends = sorted(ends, key=lambda r: int(r['tick']))
-    if match_starts:
-        match_tick = min(int(e['tick']) for e in match_starts)
-        starts = [x for x in starts if x >= match_tick]
-        ends = [e for e in ends if _integer(e['tick']) >= match_tick]
+    match_ticks = [_integer(e.get('tick')) for e in match_starts if _integer(e.get('tick')) is not None]
+    if match_ticks:
+        match_tick = max(match_ticks)
+        effective_tick = match_tick
+        prior_starts = [s for s in starts if s <= match_tick]
+        if prior_starts:
+            candidate_start = prior_starts[-1]
+            # In CS2, round_announce_match_start often fires at Round 1 freeze end
+            # (after Round 1's round_start but before its round_end). Preserve that
+            # live round start unless the prior round already ended before match_tick.
+            if not any(candidate_start < int(e['tick']) <= match_tick for e in ends):
+                effective_tick = candidate_start
+        filtered_starts = [x for x in starts if x >= effective_tick]
+        if filtered_starts:
+            starts = filtered_starts
+        ends = [e for e in ends if int(e['tick']) >= effective_tick]
+    if len(starts) > 1 and ends:
+        deduped = []
+        for i, s in enumerate(starts):
+            if i + 1 < len(starts):
+                nxt = starts[i + 1]
+                has_end = any(s <= int(e['tick']) < nxt for e in ends)
+                r_cur = start_rows.get(s, {})
+                r_nxt = start_rows.get(nxt, {})
+                same_round_num = (
+                    (r_cur.get('round') is not None and r_cur.get('round') == r_nxt.get('round'))
+                    or (r_cur.get('total_rounds_played') is not None
+                        and r_cur.get('total_rounds_played') == r_nxt.get('total_rounds_played'))
+                )
+                if not has_end and same_round_num:
+                    continue
+            deduped.append(s)
+        if deduped:
+            starts = deduped
     if not starts and ends:
         # Some community demos omit round_start events; use ends to partition the match.
         ends_ticks = [int(e['tick']) for e in ends]
         starts = [max(0, ends_ticks[0] - 100 * 64)] + [e + 1 for e in ends_ticks[:-1]]
+    freeze_ticks = sorted({_integer(e.get('tick')) for e in freeze_ends if _integer(e.get('tick')) is not None})
+    if not starts and freeze_ticks:
+        starts = list(freeze_ticks)
     if not starts:
         return []
-    freeze_ticks = sorted(_integer(e.get('tick')) for e in freeze_ends if _integer(e.get('tick')) is not None)
     result = []
     ei = 0
     for i, start in enumerate(starts):
@@ -776,13 +970,14 @@ def build_rounds(starts: list, ends: list, match_starts: list, freeze_ends: list
             winner = 'T'
         else:
             winner = ''
-        reason = _integer(event.get('reason')) if event else None
-        message = str(event.get('message') or '').lower() if event else ''
-        if reason == 1 or 'target_bombed' in message:
+        raw_reason = event.get('reason') if event else None
+        reason = _integer(raw_reason)
+        message = f"{event.get('message') or ''} {raw_reason or ''}".lower() if event else ''
+        if reason == 1 or 'target_bombed' in message or 'bomb_exploded' in message:
             win_type = 'explosion'
         elif reason == 7 or 'bomb_defused' in message:
             win_type = 'defuse'
-        elif reason in (8, 9) and not any(x in message for x in ('time', 'saved', 'surrender')):
+        elif (reason in (8, 9) or 't_killed' in message or 'ct_killed' in message) and not any(x in message for x in ('time', 'saved', 'surrender')):
             win_type = 'elimination'
         else:
             win_type = 'other'
@@ -866,7 +1061,9 @@ def populate_round_team_names(parser, rounds):
             break
         try:
             df=parser.parse_ticks(['team_num',prop],ticks=sample_ticks)
-        except Exception:
+        except BaseException as exc:
+            if _is_fatal_exception(exc):
+                raise
             continue
         if df is None or getattr(df,'empty',True) or not {'tick','team_num',prop}<=set(df.columns):
             continue
@@ -887,18 +1084,57 @@ def populate_round_team_names(parser, rounds):
                     r.setdefault('team_names',{})[str(side)]=count.most_common(1)[0][0]
 
 
+def _recover_rounds_from_ticks(parser):
+    """Recover round boundaries from tick properties when game-event streams are unavailable."""
+    try:
+        df = parser.parse_ticks(['is_warmup_period', 'total_rounds_played'])
+    except BaseException as exc:
+        if _is_fatal_exception(exc):
+            raise
+        return []
+    if df is None or getattr(df, 'empty', True) or not {'tick', 'total_rounds_played'} <= set(df.columns):
+        return []
+    has_warmup = 'is_warmup_period' in df.columns
+    cols = ['tick', 'total_rounds_played'] + (['is_warmup_period'] if has_warmup else [])
+    spans = {}
+    for row in df[cols].itertuples(index=False, name=None):
+        tick = _integer(row[0])
+        round_idx = _integer(row[1])
+        if tick is None or round_idx is None or round_idx < 0:
+            continue
+        if has_warmup and _flag(row[2]):
+            continue
+        if round_idx not in spans:
+            spans[round_idx] = [tick, tick]
+        else:
+            if tick < spans[round_idx][0]:
+                spans[round_idx][0] = tick
+            if tick > spans[round_idx][1]:
+                spans[round_idx][1] = tick
+    if not spans:
+        return []
+    starts = [{'tick': spans[k][0], 'total_rounds_played': k} for k in sorted(spans)]
+    ends = [{'tick': spans[k][1], 'total_rounds_played': k} for k in sorted(spans)]
+    return build_rounds(starts, ends, [], [])
+
+
 def extract_demo(path: Path, filename: str):
     from demoparser2 import DemoParser
 
+    _patch_demoparser2_malformed_event()
     parser=DemoParser(str(path))
     header=parser.parse_header() or {}
     map_name=str(header.get('map_name') or 'unknown').lower()
-    starts=_events(parser,'round_start')
-    ends=_events(parser,'round_end')
+    _prefetch_events(parser, ROUND_EVENTS, False)
+    starts=_events(parser,'round_start') or _events(parser,'round_prestart')
+    ends=_events(parser,'round_end') or _events(parser,'round_officially_ended')
     match_starts=_events(parser,'round_announce_match_start')
     freeze=_events(parser,'round_freeze_end')
     rounds=build_rounds(starts,ends,match_starts,freeze)
     if not rounds:
+        rounds=_recover_rounds_from_ticks(parser)
+    if not rounds:
+        _EVENT_CACHE.pop(id(parser), None)
         raise ValueError('No match rounds found in this demo. Try a complete CS2 GOTV/HLTV recording.')
     populate_round_team_names(parser,rounds)
     first,last=rounds[0]['start'],rounds[-1]['stop']
@@ -908,24 +1144,39 @@ def extract_demo(path: Path, filename: str):
     # Keep as many optional scoreboard columns as the installed parser supports.
     # Probe optional columns independently so an unsupported inventory property
     # never disables yaw, weapons, or base player position parsing.
+    sample_probe_ticks=ticks[:min(len(ticks),32)]
     best_base=None
     for candidate in [CORE_PROPS+STAT_PROPS,CORE_PROPS+STAT_PROPS[:-1],
                       CORE_PROPS+STAT_PROPS[:5], CORE_PROPS+['balance','flash_duration'],
                       CORE_PROPS+['balance'],CORE_PROPS, ['X','Y','team_num','player_color'],
                       ['X','Y','team_num']]:
         try:
-            test=parser.parse_ticks(candidate,ticks=ticks[:min(len(ticks),32)])
+            test=parser.parse_ticks(candidate,ticks=sample_probe_ticks)
             if test is not None and not test.empty:
                 best_base=candidate;break
-        except Exception:continue
+        except BaseException as exc:
+            if _is_fatal_exception(exc):
+                raise
+            continue
     if best_base is None:
         best_base=CORE_PROPS
     supported=[]
-    for prop in VIEW_PROPS:
-        try:
-            test=parser.parse_ticks(best_base+[prop],ticks=ticks[:min(len(ticks),32)])
-            if test is not None and prop in test.columns:supported.append(prop)
-        except Exception:pass
+    try:
+        combined_test=parser.parse_ticks(best_base+VIEW_PROPS,ticks=sample_probe_ticks)
+        if combined_test is not None and not combined_test.empty:
+            supported=[prop for prop in VIEW_PROPS if prop in combined_test.columns]
+    except BaseException as exc:
+        if _is_fatal_exception(exc):
+            raise
+        supported=[]
+    if not supported:
+        for prop in VIEW_PROPS:
+            try:
+                test=parser.parse_ticks(best_base+[prop],ticks=sample_probe_ticks)
+                if test is not None and prop in test.columns:supported.append(prop)
+            except BaseException as exc:
+                if _is_fatal_exception(exc):
+                    raise
     prop_sets=[]
     # Graceful downgrade: unsupported inventory encoding should not erase
     # successfully decoded angles or active guns from a particular demo.
@@ -941,7 +1192,9 @@ def extract_demo(path: Path, filename: str):
         try:
             df=parser.parse_ticks(prop_set,ticks=ticks)
             if df is not None and not df.empty:break
-        except Exception:
+        except BaseException as exc:
+            if _is_fatal_exception(exc):
+                raise
             continue
     if df is None or df.empty or not {'tick','X','Y'}<=set(df.columns):
         raise ValueError('No player coordinates could be read. The recording may be incomplete.')
@@ -1009,11 +1262,14 @@ def extract_demo(path: Path, filename: str):
         return [round(mid-spread,1),round(mid+spread,1)]
 
     # Events contain exact ticks, unlike motion frames sampled every 8 ticks.
+    bomb_event_names=('bomb_pickup','bomb_dropped','bomb_planted','bomb_defused','bomb_exploded','bomb_begindefuse','bomb_abortdefuse','player_given_c4')
+    event_names=set(UTILITY_TYPES)|set(END_EVENTS.values())|{'inferno_extinguish'}
+    _prefetch_events(parser, ('player_death','weapon_fire','player_hurt','player_blind','grenade_thrown')+bomb_event_names+tuple(sorted(event_names)), True)
     deaths=_events(parser,'player_death',True)
     kills=build_kills(deaths,rounds,player_index)
     infer_elimination_rounds(rounds,frames,kills)
     shots=build_shots(_events(parser,'weapon_fire',True),rounds,player_index,frames)
-    bomb_events=build_bomb_events({name:_events(parser,name,True) for name in ('bomb_pickup','bomb_dropped','bomb_planted','bomb_defused','bomb_exploded','bomb_begindefuse','bomb_abortdefuse','player_given_c4')},rounds,player_index,frames)
+    bomb_events=build_bomb_events({name:_events(parser,name,True) for name in bomb_event_names},rounds,player_index,frames)
     bomb_events=infer_bomb_inventory_events(loadouts,rounds,bomb_events,frames)
     # A direct defuse/explosion event is more precise than a generic round_end
     # reason, including recordings that omit the reason numeric field.
@@ -1036,6 +1292,7 @@ def extract_demo(path: Path, filename: str):
     trajectories=parse_trajectory(parser,utilities,player_index,first,last,players)
     utilities=enrich_utility_with_trajectories(utilities,trajectories,rounds)
     thrown=_events(parser,'grenade_thrown',True)
+    _EVENT_CACHE.pop(id(parser), None)
     trajectories=complete_trajectories(utilities,trajectories,thrown,frames,player_index,rounds)
     damage_events=associate_utility_impacts(utilities,hurts,blinds,player_index,rounds,trajectories)
     enemy_damage_events=build_enemy_damage_events(hurts,player_index,rounds,frames)

@@ -60,14 +60,26 @@ const kindFromWeapon=w=>{
 };
 function buildRounds(starts,ends,matches,freeze){
  const isWarmup=r=>yes(r?.is_warmup_period??r?.is_warmup);
- starts=starts.filter(r=>!isWarmup(r));
- ends=ends.filter(r=>!isWarmup(r));
- freeze=freeze.filter(r=>!isWarmup(r));
+ const nonWarmupStarts=starts.filter(r=>!isWarmup(r));if(nonWarmupStarts.length)starts=nonWarmupStarts;
+ const nonWarmupEnds=ends.filter(r=>!isWarmup(r));if(nonWarmupEnds.length)ends=nonWarmupEnds;
+ const nonWarmupFreeze=freeze.filter(r=>!isWarmup(r));if(nonWarmupFreeze.length)freeze=nonWarmupFreeze;
+ ends=ends.filter(r=>integer(r?.tick)!=null&&!(integer(r?.round)===0&&!r?.winner&&!r?.reason&&!r?.message));
  let startTicks=[...new Set(starts.map(r=>integer(r.tick)).filter(n=>n!=null))].sort((a,b)=>a-b);
- const minMatch=matches.length?Math.min(...matches.map(r=>r.tick)):null;
- // Some event streams place round_announce_match_start after the first round start.
- // Never discard ALL actual round starts on the basis of this optional event alone.
- if(minMatch!==null){const filtered=startTicks.filter(t=>t>=minMatch);if(filtered.length)startTicks=filtered;}
+ const matchTicks=matches.map(r=>integer(r?.tick)).filter(n=>n!=null);
+ const matchTick=matchTicks.length?Math.max(...matchTicks):null;
+ // Some event streams place round_announce_match_start at Round 1 freeze end (after
+ // Round 1 start). Preserve that live round start unless the prior round ended before matchTick.
+ if(matchTick!==null){
+   let effectiveTick=matchTick;
+   const prior=startTicks.filter(t=>t<=matchTick);
+   if(prior.length){
+     const cand=prior.at(-1);
+     if(!ends.some(e=>cand<e.tick&&e.tick<=matchTick))effectiveTick=cand;
+   }
+   const filtered=startTicks.filter(t=>t>=effectiveTick);
+   if(filtered.length)startTicks=filtered;
+   ends=ends.filter(e=>e.tick>=effectiveTick);
+ }
  if(!startTicks.length&&ends.length){startTicks=[Math.max(0,ends[0].tick-6400),...ends.slice(0,-1).map(r=>r.tick+1)];}
  const fr=freeze.map(r=>integer(r.tick)).filter(t=>t!=null);
  // Some parser builds expose round_freeze_end but not round_start/round_end.
@@ -79,9 +91,9 @@ function buildRounds(starts,ends,matches,freeze){
   const end=event?.tick??(next?next-1:start+115*RATE);
   const freezeTick=fr.find(t=>t>=start&&t<=end)??start;
   const raw=txt(event?.winner).toUpperCase();const winner=['3','CT','COUNTERTERRORIST'].includes(raw)?'CT':['2','T','TERRORIST'].includes(raw)?'T':'';
-  const reason=integer(event?.reason),message=txt(event?.message).toLowerCase();
-  const win_type=reason===1||message.includes('target_bombed')?'explosion':reason===7||message.includes('bomb_defused')?'defuse':
-    [8,9].includes(reason)&&!/time|saved|surrender/.test(message)?'elimination':'other';
+  const reason=integer(event?.reason),message=(txt(event?.message)+' '+txt(event?.reason)).toLowerCase();
+  const win_type=reason===1||message.includes('target_bombed')||message.includes('bomb_exploded')?'explosion':reason===7||message.includes('bomb_defused')?'defuse':
+    ([8,9].includes(reason)||message.includes('t_killed')||message.includes('ct_killed'))&&!/time|saved|surrender/.test(message)?'elimination':'other';
   const limit=N(starts.find(r=>r.tick===start)?.timelimit);
   return {number:i+1,start,freeze:freezeTick,end,stop:next?next-1:end+5*RATE,winner,win_type,win_reason:reason,
           round_seconds:limit>=30&&limit<=300?limit:115};

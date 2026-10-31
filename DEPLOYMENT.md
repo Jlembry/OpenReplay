@@ -11,7 +11,7 @@ This repository contains **one unchanged replay interface** and two hosting mode
 
 1. Download the `OpenReplay_Local_Secure.zip` artifact from an official GitHub Release; verify its SHA-256 against the checksum published separately on the release page. Avoid random third-party downloads.
 2. Extract to an entirely new folder. Don't merge with a prior version.
-3. Install Python 3.11 or newer from an official source; check `py -3 --version`.
+3. Install **64-bit Python 3.11, 3.12, or 3.13** (`3.13` recommended; Python `3.14+` lacks prebuilt wheels for some pinned packages) from an official source; check `py -3.13 --version`.
 4. Run `start_windows.bat`. The first run installs explicitly versioned packages into `.venv`; later launches reuse that environment. The terminal prints the actual localhost URL.
 5. Use that URL, not an old bookmark. The app never binds to all network interfaces in local mode.
 6. To fully stop it, use **Ctrl+C** in the terminal. The local process deletes its own temporary session storage when it exits normally, and job expiry cleans active sessions. A forced shutdown or power loss may leave orphaned OS temp data; it must be removed using OS cleanup tooling.

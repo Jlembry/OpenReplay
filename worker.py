@@ -12,6 +12,13 @@ def atomic_json(path:Path, data:dict):
         f.flush();os.fsync(f.fileno())
     os.replace(temp,path)
 
+SAFE_PARSE_ERRORS = {
+    'No match rounds found in this demo. Try a complete CS2 GOTV/HLTV recording.',
+    'No player coordinates could be read. The recording may be incomplete.',
+    'No playable CT/T positions found.',
+}
+
+
 def single(folder:Path):
     source=folder/'demo.dem'
     meta={}
@@ -25,11 +32,13 @@ def single(folder:Path):
         data=extract_demo(source,meta.get('filename','recording.dem'))
         atomic_json(folder/'replay.json',data)
         meta.update(status='ready', map=data['map'],rounds=len(data['rounds']),players=len(data['players']))
-    except BaseException:
+    except BaseException as exc:
         # The Rust/PyO3 demo parser can raise PanicException, a BaseException
         # rather than a normal Exception, on malformed input. This disposable
         # parsing worker must still mark the job failed and delete the demo.
-        meta.update(status='error',error='The recording could not be parsed.')
+        detail=str(exc.args[0]).strip() if isinstance(exc,ValueError) and exc.args else ''
+        msg=detail if detail in SAFE_PARSE_ERRORS else 'The recording could not be parsed.'
+        meta.update(status='error',error=msg)
     finally:
         source.unlink(missing_ok=True)
         atomic_json(folder/'status.json',meta)
